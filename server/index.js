@@ -20,7 +20,7 @@ const SESSION_TTL_HOURS = 24
 
 const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next)
 
-// Provider init is async for MongoDB; keep server startup blocked until the store is ready.
+// MongoDB connection is async; keep server startup blocked until the store is ready.
 const store = await openStore()
 
 const app = express()

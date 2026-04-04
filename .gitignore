@@ -1,9 +1,5 @@
 node_modules/
 
-# Local-only SQLite runtime sidecar files
-data/*.sqlite-wal
-data/*.sqlite-shm
-
 # Environment secrets
 .env
 .env.*

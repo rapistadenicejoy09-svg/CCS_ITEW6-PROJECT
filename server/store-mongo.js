@@ -25,7 +25,7 @@ function getMongoDbName(mongoUri) {
 export async function openMongoStore() {
   const mongoUri = String(process.env.MONGODB_URI || '').trim()
   if (!mongoUri) {
-    throw new Error('Missing MONGODB_URI. Set it when DB_PROVIDER=mongodb.')
+    throw new Error('Missing MONGODB_URI.')
   }
 
   const dbName = getMongoDbName(mongoUri)
