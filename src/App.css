@@ -452,6 +452,38 @@ body[data-theme='light'] .badge-enrolled {
   background: rgba(229, 118, 47, 0.1);
 }
 
+.tag-active, .tag-enrolled {
+  background: rgba(16, 185, 129, 0.2);
+  color: #10b981;
+}
+
+body[data-theme='light'] .tag-active,
+body[data-theme='light'] .tag-enrolled {
+  background: #d1fae5;
+  color: #047857;
+}
+
+.tag-inactive, .tag-not-enrolled {
+  background: rgba(244, 63, 94, 0.2);
+  color: #f43f5e;
+}
+
+body[data-theme='light'] .tag-inactive,
+body[data-theme='light'] .tag-not-enrolled {
+  background: #ffe4e6;
+  color: #e11d48;
+}
+
+.tag-unknown {
+  background: rgba(156, 163, 175, 0.2);
+  color: #9ca3af;
+}
+
+body[data-theme='light'] .tag-unknown {
+  background: #f3f4f6;
+  color: #4b5563;
+}
+
 .top-bar-actions {
   display: flex;
   align-items: center;
