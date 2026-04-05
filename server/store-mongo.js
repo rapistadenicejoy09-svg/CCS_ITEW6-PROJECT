@@ -65,7 +65,14 @@ export async function openMongoStore() {
       { $inc: { seq: 1 } },
       { upsert: true, returnDocument: 'after' },
     )
-    return res?.value?.seq
+    // Support both res.value (old) and res (new) driver formats
+    const seq = res?.value?.seq ?? res?.seq
+    if (typeof seq === 'number') return seq
+    
+    // Fallback: search for the highest numeric ID, ignoring null or invalid values
+    const last = await users.find({ id: { $gt: 0 } }, { projection: { id: 1 } }).sort({ id: -1 }).limit(1).toArray()
+    const maxId = last.length > 0 ? (Number(last[0].id) || 0) : 0
+    return maxId + 1
   }
 
   return {
@@ -166,6 +173,13 @@ export async function openMongoStore() {
       studentType,
       studentIdStored,
       emailStored,
+      personalInformation,
+      academicInfo,
+      academicHistory,
+      nonAcademicActivities,
+      violations,
+      skills,
+      affiliations,
     }) {
       const id = await nextUserId()
       const doc = {
@@ -187,6 +201,13 @@ export async function openMongoStore() {
 
       if (role === 'student') {
         doc.student_id_norm = studentIdStored ? normalizeForMongoIdentifier(studentIdStored) : null
+        doc.personal_information = personalInformation || {}
+        doc.academic_info = academicInfo || {}
+        doc.academic_history = academicHistory || []
+        doc.non_academic_activities = nonAcademicActivities || []
+        doc.violations = violations || []
+        doc.skills = skills || []
+        doc.affiliations = affiliations || []
       }
 
       await users.insertOne(doc)
@@ -242,6 +263,13 @@ export async function openMongoStore() {
               class_section: 1,
               student_type: 1,
               is_active: 1,
+              personal_information: 1,
+              academic_info: 1,
+              academic_history: 1,
+              non_academic_activities: 1,
+              violations: 1,
+              skills: 1,
+              affiliations: 1,
             },
           },
         )
@@ -266,6 +294,13 @@ export async function openMongoStore() {
             class_section: 1,
             student_type: 1,
             is_active: 1,
+            personal_information: 1,
+            academic_info: 1,
+            academic_history: 1,
+            non_academic_activities: 1,
+            violations: 1,
+            skills: 1,
+            affiliations: 1,
           },
         },
       )
@@ -291,11 +326,95 @@ export async function openMongoStore() {
             class_section: 1,
             student_type: 1,
             is_active: 1,
+            personal_information: 1,
+            academic_info: 1,
+            academic_history: 1,
+            non_academic_activities: 1,
+            violations: 1,
+            skills: 1,
+            affiliations: 1,
           },
         },
       )
       if (!user) return null
       return { ...user, is_active: user.is_active ?? 1 }
+    },
+
+    async updateStudentProfile(userId, updates) {
+      const allowedFields = [
+        'personal_information',
+        'academic_info',
+        'academic_history',
+        'non_academic_activities',
+        'violations',
+        'skills',
+        'affiliations',
+        'full_name',
+        'email',
+        'class_section',
+        'student_type',
+        'student_id',
+        'is_active',
+      ]
+      const setUpdates = {}
+      for (const field of allowedFields) {
+        if (updates[field] !== undefined) {
+          if (field === 'is_active') {
+             setUpdates[field] = updates[field] ? 1 : 0
+          } else {
+             setUpdates[field] = updates[field]
+          }
+        }
+      }
+
+      if (Object.keys(setUpdates).length > 0) {
+        // Try matching both as number and string for robustness
+        const idQuery = { $or: [{ id: Number(userId) }, { id: String(userId) }] }
+        const result = await users.updateOne(idQuery, { $set: setUpdates })
+        
+        console.log(`[DEBUG] store: profile update for ID ${userId}:`, {
+           modifiedCount: result.modifiedCount,
+           matchedCount: result.matchedCount,
+           activeStatus: setUpdates.is_active !== undefined ? setUpdates.is_active : 'no-change'
+        })
+      }
+      return await this.getAdminUserById(userId)
+    },
+
+    async findStudentsBySkill(skill) {
+      return await users
+        .find(
+          { role: 'student', skills: { $regex: skill, $options: 'i' } },
+          {
+            projection: {
+              _id: 0,
+              id: 1,
+              full_name: 1,
+              student_id: 1,
+              email: 1,
+              skills: 1,
+            },
+          },
+        )
+        .toArray()
+    },
+
+    async findStudentsByAffiliation(organization) {
+      return await users
+        .find(
+          { role: 'student', 'affiliations.organization': { $regex: organization, $options: 'i' } },
+          {
+            projection: {
+              _id: 0,
+              id: 1,
+              full_name: 1,
+              student_id: 1,
+              email: 1,
+              affiliations: 1,
+            },
+          },
+        )
+        .toArray()
     },
   }
 }

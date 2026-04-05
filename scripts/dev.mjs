@@ -1,3 +1,4 @@
+import fs from 'node:fs'
 import { spawn } from 'node:child_process'
 import net from 'node:net'
 import path from 'node:path'
@@ -7,6 +8,43 @@ import { fileURLToPath } from 'node:url'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const rootDir = path.resolve(__dirname, '..')
+
+function loadEnvFile() {
+  try {
+    const envPath = path.join(rootDir, '.env')
+    if (!fs.existsSync(envPath)) return
+
+    const raw = fs.readFileSync(envPath, 'utf8')
+    for (const line of raw.split(/\r?\n/)) {
+      const trimmed = String(line || '').trim()
+      if (!trimmed || trimmed.startsWith('#')) continue
+
+      let key, value
+      if (trimmed.startsWith('$env:')) {
+        const m = trimmed.match(/^\$env:(\w+)=(?:"([^"]*)"|'([^']*)'|(.*))$/)
+        if (!m) continue
+        key = m[1]
+        value = m[2] ?? m[3] ?? m[4] ?? ''
+      } else {
+        const idx = trimmed.indexOf('=')
+        if (idx === -1) continue
+        key = trimmed.slice(0, idx).trim()
+        value = trimmed.slice(idx + 1).trim()
+        if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+          value = value.slice(1, -1)
+        }
+      }
+      if (key) {
+        process.env[key] = value
+      }
+    }
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('Could not load .env file:', err)
+  }
+}
+
+loadEnvFile()
 
 const DEFAULT_PORT = Number(process.env.PORT || 5000)
 const MAX_PORT_PROBES = 20

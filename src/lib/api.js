@@ -131,6 +131,13 @@ export async function apiRegister({
   studentType,
   studentId,
   email,
+  academicInfo,
+  personalInformation,
+  academicHistory,
+  nonAcademicActivities,
+  violations,
+  skills,
+  affiliations,
 }) {
   return request('/api/auth/register', {
     method: 'POST',
@@ -144,6 +151,13 @@ export async function apiRegister({
       studentType,
       studentId,
       email,
+      academicInfo,
+      personalInformation,
+      academicHistory,
+      nonAcademicActivities,
+      violations,
+      skills,
+      affiliations,
     }),
   })
 }
@@ -188,6 +202,17 @@ export async function apiAdminPatchUser(token, id, body) {
     method: 'PATCH',
     headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify(body),
+  })
+}
+
+export async function apiAdminStudents(token, query = {}) {
+  const params = new URLSearchParams()
+  if (query.skill) params.append('skill', query.skill)
+  if (query.affiliation) params.append('affiliation', query.affiliation)
+  const url = `/api/admin/students${params.toString() ? '?' + params.toString() : ''}`
+  return request(url, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` },
   })
 }
 

@@ -67,12 +67,17 @@ export const ROLE_PERMISSIONS = {
 
 export function hasPermission(role, permission) {
   const set = ROLE_PERMISSIONS[role]
-  return set ? set.has(permission) : false
+  const allowed = set ? set.has(permission) : false
+  if (!allowed) {
+    console.warn(`[Security] Permission denied: Role "${role}" lacks permission "${permission}"`)
+  }
+  return allowed
 }
 
 export function authorize(permission) {
   return (req, res, next) => {
     if (!req.user || !req.user.role) {
+      console.warn(`[Security] Forbidden: No user or role found in request for permission "${permission}"`)
       return res.status(403).json({ error: 'Forbidden' })
     }
     if (hasPermission(req.user.role, permission)) {

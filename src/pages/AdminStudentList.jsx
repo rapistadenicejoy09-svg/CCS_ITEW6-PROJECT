@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, useCallback } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { apiAdminPatchUser, apiAdminUsers } from '../lib/api'
+import { apiAdminPatchUser, apiAdminStudents } from '../lib/api'
 
 function getRole() {
   try {
@@ -38,13 +38,43 @@ function IconEye() {
   )
 }
 
-function IconUserOff() {
+function IconTrash() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
-      <circle cx="9" cy="7" r="4" />
-      <line x1="17" y1="8" x2="22" y2="13" />
-      <line x1="22" y1="8" x2="17" y2="13" />
+      <polyline points="3 6 5 6 21 6" />
+      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+    </svg>
+  )
+}
+
+function IconFilter() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
+    </svg>
+  )
+}
+
+function IconGrid() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <rect x="3" y="3" width="7" height="7"></rect>
+      <rect x="14" y="3" width="7" height="7"></rect>
+      <rect x="14" y="14" width="7" height="7"></rect>
+      <rect x="3" y="14" width="7" height="7"></rect>
+    </svg>
+  )
+}
+
+function IconList() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <line x1="8" y1="6" x2="21" y2="6"></line>
+      <line x1="8" y1="12" x2="21" y2="12"></line>
+      <line x1="8" y1="18" x2="21" y2="18"></line>
+      <line x1="3" y1="6" x2="3.01" y2="6"></line>
+      <line x1="3" y1="12" x2="3.01" y2="12"></line>
+      <line x1="3" y1="18" x2="3.01" y2="18"></line>
     </svg>
   )
 }
@@ -56,18 +86,25 @@ export default function AdminStudentList() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [createSuccess, setCreateSuccess] = useState('')
+  
   const [search, setSearch] = useState('')
   const [filterSection, setFilterSection] = useState('')
   const [filterType, setFilterType] = useState('')
+  const [filterSkill, setFilterSkill] = useState('')
+  const [filterAffiliation, setFilterAffiliation] = useState('')
+  
+  const [showFilters, setShowFilters] = useState(false)
+  const [viewMode, setViewMode] = useState('grid')
+
   const [actionId, setActionId] = useState(null)
-  const [deactivateTarget, setDeactivateTarget] = useState(null)
+  const [deleteTarget, setDeleteTarget] = useState(null)
 
   const isAdmin = getRole() === 'admin'
 
-  async function loadStudents() {
+  const loadStudents = useCallback(async () => {
     const token = localStorage.getItem('authToken')
     if (!token) {
-      setError('Missing auth token. Please sign in again.')
+      setError('Missing auth token.')
       setLoading(false)
       return
     }
@@ -75,15 +112,19 @@ export default function AdminStudentList() {
     setLoading(true)
     setError('')
     try {
-      const result = await apiAdminUsers(token)
-      const allUsers = Array.isArray(result?.users) ? result.users : []
-      setStudents(allUsers.filter((u) => u.role === 'student'))
+      const query = {}
+      if (filterSkill.trim()) query.skill = filterSkill.trim()
+      if (filterAffiliation.trim()) query.affiliation = filterAffiliation.trim()
+      const result = await apiAdminStudents(token, query)
+      const rawStudents = Array.isArray(result?.students) ? result.students : []
+      // Filter out soft-deleted students for UI parity with Delete Action
+      setStudents(rawStudents.filter(isUserActive))
     } catch (err) {
       setError(err?.message || 'Failed to load students.')
     } finally {
       setLoading(false)
     }
-  }
+  }, [filterSkill, filterAffiliation])
 
   useEffect(() => {
     if (!isAdmin) {
@@ -91,7 +132,7 @@ export default function AdminStudentList() {
       return
     }
     loadStudents()
-  }, [isAdmin])
+  }, [isAdmin, loadStudents])
 
   useEffect(() => {
     if (!location.state?.studentCreated) return
@@ -121,12 +162,7 @@ export default function AdminStudentList() {
         const mail = String(s.email || '').toLowerCase()
         const legacyId = String(s.identifier || '').toLowerCase()
         const fullName = String(s.full_name || '').toLowerCase()
-        if (
-          !sid.includes(q) &&
-          !mail.includes(q) &&
-          !legacyId.includes(q) &&
-          !fullName.includes(q)
-        ) {
+        if (!sid.includes(q) && !mail.includes(q) && !legacyId.includes(q) && !fullName.includes(q)) {
           return false
         }
       }
@@ -143,10 +179,14 @@ export default function AdminStudentList() {
     })
   }, [students, search, filterSection, filterType])
 
-  async function confirmDeactivate() {
-    const student = deactivateTarget
+  const hasActiveFilters = Boolean(
+    search.trim() || filterSection || filterType || filterSkill.trim() || filterAffiliation.trim()
+  )
+
+  async function confirmDelete() {
+    const student = deleteTarget
     if (!student || !isUserActive(student)) {
-      setDeactivateTarget(null)
+      setDeleteTarget(null)
       return
     }
     const token = localStorage.getItem('authToken')
@@ -155,232 +195,359 @@ export default function AdminStudentList() {
     setError('')
     try {
       await apiAdminPatchUser(token, student.id, { isActive: false })
-      setDeactivateTarget(null)
+      setDeleteTarget(null)
       await loadStudents()
     } catch (err) {
-      setError(err?.message || 'Failed to deactivate student.')
+      setError(err?.message || 'Failed to delete student.')
     } finally {
       setActionId(null)
     }
   }
 
   if (!isAdmin) {
-    return (
-      <div className="module-page">
-        <p className="empty-state">This page is available for administrators only.</p>
-      </div>
-    )
+    return <div className="p-8 text-center text-[var(--text-muted)]">Administrators only.</div>
   }
-
-  const deactivateSubmitting =
-    deactivateTarget != null && actionId != null && actionId === deactivateTarget.id
 
   return (
     <div className="module-page">
-      <header className="module-header">
-        <div>
-          <h1 className="main-title">1.1 Student List</h1>
-          <p className="main-description">
-            Filter and manage student accounts. Use Create student account to add new logins.
-          </p>
-        </div>
-        <Link to="/admin/create-student" className="btn btn-primary">
-          Create student account
-        </Link>
-      </header>
-
-      <section className="content-panel">
-        <div className="content-header" style={{ flexWrap: 'wrap', gap: '12px' }}>
-          <div style={{ flex: '1 1 200px' }}>
-            <h2 className="content-title">Students</h2>
-            <p className="content-subtitle">Search and filter by class section or regular / irregular status.</p>
+      <div className="w-full space-y-6">
+        
+        {/* Header Section */}
+        <header className="module-header flex flex-col md:flex-row justify-between items-start md:items-center">
+          <div>
+            <h1 className="main-title font-extrabold text-[var(--text)]">
+              Student List
+            </h1>
+            <p className="main-description text-[var(--text-muted)] mt-1">
+              Manage profiles, filter by dynamic skills, and oversee academic records.
+            </p>
           </div>
-          <div
-            className="search-section"
-            style={{
-              display: 'flex',
-              flexWrap: 'wrap',
-              gap: '10px',
-              alignItems: 'center',
-              justifyContent: 'flex-end',
-            }}
+          <Link
+            to="/admin/create-student"
+            className="mt-4 md:mt-0 font-medium transition-all text-sm px-6 py-2.5 rounded-full hover:shadow-lg"
+            style={{ background: 'var(--accent)', color: 'white', border: '1px solid var(--accent-soft)' }}
           >
-            <input
-              className="search-input"
-              type="text"
-              placeholder="Search by student ID, name, or email…"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              style={{ minWidth: '180px' }}
-            />
-            <select
-              className="search-input"
-              value={filterSection}
-              onChange={(e) => setFilterSection(e.target.value)}
-              aria-label="Filter by class section"
-              style={{ minWidth: '160px' }}
-            >
-              <option value="">All sections</option>
-              <option value="__none__">No section</option>
-              {sectionOptions.map((sec) => (
-                <option key={sec} value={sec}>
-                  {sec}
-                </option>
-              ))}
-            </select>
-            <select
-              className="search-input"
-              value={filterType}
-              onChange={(e) => setFilterType(e.target.value)}
-              aria-label="Filter by student type"
-              style={{ minWidth: '150px' }}
-            >
-              <option value="">All types</option>
-              <option value="regular">Regular</option>
-              <option value="irregular">Irregular</option>
-            </select>
-          </div>
-        </div>
+            + Create Student Profile
+          </Link>
+        </header>
 
         {createSuccess && (
-          <div className="auth-success" style={{ margin: '0 0 12px' }}>
+          <div className="p-4 rounded-xl text-emerald-600 bg-emerald-50 border border-emerald-200">
             {createSuccess}
-            <button
-              type="button"
-              className="auth-success-dismiss"
-              onClick={() => setCreateSuccess('')}
-              aria-label="Dismiss"
-            >
-              ×
-            </button>
           </div>
         )}
-
         {error && (
-          <div className="auth-error" style={{ margin: '0 0 12px' }}>
+          <div className="p-4 rounded-xl text-rose-600 bg-rose-50 border border-rose-200">
             {error}
           </div>
         )}
 
-        <div className="table-wrapper">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>Student ID</th>
-                <th>Full name</th>
-                <th>Section</th>
-                <th>Type</th>
-                <th>2FA</th>
-                <th>Status</th>
-                <th>Created</th>
-                <th style={{ width: '1%' }}>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading && (
-                <tr>
-                  <td colSpan="9" className="empty-state">
-                    Loading student accounts…
-                  </td>
-                </tr>
+        {/* Filters and Search Bar Section */}
+        <section className="bg-[var(--card-bg)] border border-[var(--border-color)] rounded-[var(--radius-lg)] p-5 md:p-6 shadow-sm">
+          <div className="flex flex-col md:flex-row gap-4 items-center">
+            
+            <div className="flex-1 w-full relative">
+              <input 
+                type="text"
+                placeholder="Search by name, ID, email..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="search-input w-full"
+              />
+            </div>
+            
+            <div className="flex items-center gap-3 w-full md:w-auto">
+              {/* Filter Display Toggle */}
+              <button 
+                onClick={() => setShowFilters(!showFilters)}
+                className={`btn flex items-center gap-2 ${showFilters || hasActiveFilters ? 'btn-primary' : 'btn-secondary'}`}
+              >
+                <IconFilter /> Filters 
+                {(filterSection || filterType || filterSkill || filterAffiliation) && (
+                  <span className={`w-1.5 h-1.5 rounded-full ${showFilters || hasActiveFilters ? 'bg-[#1a0d05]' : 'bg-[var(--accent)]'}`} />
+                )}
+              </button>
+              
+              {/* View Toggle */}
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setViewMode('list')}
+                  className={`btn btn-compact flex items-center justify-center !p-1.5 ${viewMode === 'list' ? 'btn-primary' : 'btn-secondary'}`}
+                  title="List View"
+                >
+                  <IconList />
+                </button>
+                <button
+                  onClick={() => setViewMode('grid')}
+                  className={`btn btn-compact flex items-center justify-center !p-1.5 ${viewMode === 'grid' ? 'btn-primary' : 'btn-secondary'}`}
+                  title="Grid View"
+                >
+                  <IconGrid />
+                </button>
+              </div>
+            </div>
+
+          </div>
+
+          {showFilters && (
+            <div className="mt-5 md:mt-6 pt-5 md:pt-6 border-t border-[var(--border-color)] animate-fade-in">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs text-[var(--text-muted)] uppercase tracking-wider font-semibold ml-1">Section</label>
+                  <select
+                    className="search-input appearance-none w-full"
+                    value={filterSection}
+                    onChange={(e) => setFilterSection(e.target.value)}
+                  >
+                    <option value="">All sections</option>
+                    <option value="__none__">No section</option>
+                    {sectionOptions.map((sec) => (
+                      <option key={sec} value={sec}>{sec}</option>
+                    ))}
+                  </select>
+                </div>
+                
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs text-[var(--text-muted)] uppercase tracking-wider font-semibold ml-1">Type</label>
+                  <select
+                    className="search-input appearance-none w-full"
+                    value={filterType}
+                    onChange={(e) => setFilterType(e.target.value)}
+                  >
+                    <option value="">All types</option>
+                    <option value="regular">Regular</option>
+                    <option value="irregular">Irregular</option>
+                  </select>
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs text-[var(--text-muted)] uppercase tracking-wider font-semibold ml-1">Skill</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Basketball, Programming"
+                    value={filterSkill}
+                    onChange={(e) => setFilterSkill(e.target.value)}
+                    className="search-input w-full"
+                  />
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs text-[var(--text-muted)] uppercase tracking-wider font-semibold ml-1">Affiliation</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Debate Club"
+                    value={filterAffiliation}
+                    onChange={(e) => setFilterAffiliation(e.target.value)}
+                    className="search-input w-full"
+                  />
+                </div>
+              </div>
+
+              {hasActiveFilters && (
+                <div className="mt-5 flex justify-end">
+                  <button
+                    onClick={() => {
+                      setSearch(''); setFilterSection(''); setFilterType(''); setFilterSkill(''); setFilterAffiliation('');
+                    }}
+                    className="px-5 py-2 rounded-full border border-[var(--border-color)] bg-transparent hover:bg-[var(--border-color)] text-[var(--text-muted)] hover:text-[var(--text)] text-sm font-medium transition-colors"
+                  >
+                    Clear all filters
+                  </button>
+                </div>
               )}
-              {!loading && filteredStudents.length === 0 && (
-                <tr>
-                  <td colSpan="9" className="empty-state">
-                    No students match the current filters.
-                  </td>
-                </tr>
-              )}
-              {!loading &&
-                filteredStudents.map((student, index) => {
-                  const active = isUserActive(student)
-                  const busy = actionId === student.id
-                  return (
-                    <tr key={student.id}>
-                      <td>{index + 1}</td>
-                      <td>{displayStudentId(student)}</td>
-                      <td>{student.full_name || '—'}</td>
-                      <td>{(student.class_section || '').trim() || '—'}</td>
-                      <td>{formatStudentType((student.student_type || 'regular').toLowerCase())}</td>
-                      <td>
-                        <span className={`status-pill ${student.twofa_enabled ? 'status-active' : ''}`}>
-                          {student.twofa_enabled ? 'On' : 'Off'}
-                        </span>
-                      </td>
-                      <td>
-                        {active ? (
-                          <span className="status-pill status-active">Active</span>
-                        ) : (
-                          <span className="status-pill">Inactive</span>
-                        )}
-                      </td>
-                      <td>{student.created_at ? new Date(student.created_at).toLocaleString() : '—'}</td>
-                      <td>
-                        <div className="table-actions-inline">
-                          <Link
-                            to={`/admin/student/${student.id}`}
-                            className="table-icon-action"
-                            title="View student"
-                            aria-label={`View ${displayStudentId(student)}`}
-                          >
-                            <IconEye />
-                          </Link>
+            </div>
+          )}
+        </section>
+
+        {/* Results */}
+        <section className="space-y-4">
+          <h2 className="text-xl font-bold px-1 flex items-center gap-2 text-[var(--text)]">
+            <span className="w-6 h-[2px] bg-[var(--accent)]"></span>
+            Profiles 
+            {filteredStudents.length > 0 && (
+              <span className="px-2 py-0.5 bg-[var(--accent-soft)] text-[var(--accent)] rounded-full text-xs ml-2">
+                {filteredStudents.length}
+              </span>
+            )}
+          </h2>
+
+          {loading ? (
+            <div className="flex justify-center p-12 text-[var(--accent)]">
+               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-current"></div>
+            </div>
+          ) : filteredStudents.length === 0 ? (
+            <div className="text-center p-12 bg-[var(--card-bg)] border border-[var(--border-color)] rounded-[var(--radius-lg)]">
+              <p className="text-[var(--text-muted)] text-sm">No student profiles match the current query.</p>
+            </div>
+          ) : (
+            <>
+              {/* GRID VIEW */}
+              {viewMode === 'grid' && (
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
+                  {filteredStudents.map((student) => {
+                    const active = isUserActive(student)
+                    const busy = actionId === student.id
+                    return (
+                      <div key={student.id} className="group flex flex-col bg-[var(--card-bg)] border border-[var(--border-color)] hover:border-[var(--accent)] rounded-[var(--radius-md)] overflow-hidden transition-all duration-200">
+                        {/* Card Header */}
+                        <div className="p-5 pb-3 border-b border-[var(--border-color)] flex justify-between items-start">
+                          <div>
+                            <h3 className="text-base font-bold text-[var(--text)] mb-0.5 leading-tight">{student.full_name || 'Unnamed Student'}</h3>
+                            <p className="text-[var(--accent)] font-mono text-xs">{displayStudentId(student)}</p>
+                          </div>
+                          <span className={`px-2.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${active ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400' : 'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-400'}`}>
+                            {active ? 'Active' : 'Inactive'}
+                          </span>
+                        </div>
+
+                        {/* Card Body */}
+                        <div className="p-5 flex-1 flex flex-col gap-4 text-sm">
+                          <div className="grid grid-cols-2 gap-y-3 gap-x-2">
+                             <div>
+                               <p className="text-[var(--text-muted)] text-[10px] uppercase font-semibold mb-0.5">Program</p>
+                               <p className="text-[var(--text)] text-xs">{student.academic_info?.program || student.class_section || '—'}</p>
+                             </div>
+                             <div>
+                               <p className="text-[var(--text-muted)] text-[10px] uppercase font-semibold mb-0.5">Year Level</p>
+                               <p className="text-[var(--text)] text-xs">{student.academic_info?.year_level || '—'}</p>
+                             </div>
+                             <div>
+                               <p className="text-[var(--text-muted)] text-[10px] uppercase font-semibold mb-0.5">GPA</p>
+                               <p className="text-[var(--text)] text-xs">{student.academic_info?.gpa ?? '—'}</p>
+                             </div>
+                             <div>
+                               <p className="text-[var(--text-muted)] text-[10px] uppercase font-semibold mb-0.5">Enrollment</p>
+                               <p className="text-[var(--text)] text-xs">{student.academic_info?.enrollment_status || '—'}</p>
+                             </div>
+                             <div className="col-span-2">
+                               <p className="text-[var(--text-muted)] text-[10px] uppercase font-semibold mb-0.5">Email</p>
+                               <p className="text-[var(--text)] text-xs truncate">{student.email || '—'}</p>
+                             </div>
+                           </div>
+
+                          {student.skills && Array.isArray(student.skills) && student.skills.length > 0 && (
+                            <div className="mt-auto pt-3">
+                              <p className="text-[var(--text-muted)] text-[10px] uppercase font-semibold mb-1.5">Skills</p>
+                              <div className="flex flex-wrap gap-1.5">
+                                {student.skills.slice(0, 3).map((sk, idx) => (
+                                  <span key={idx} className="px-2 py-0.5 bg-[var(--accent-soft)] border border-[rgba(229,118,47,0.2)] rounded text-[10px] text-[var(--accent)] font-medium">
+                                    {sk}
+                                  </span>
+                                ))}
+                                {student.skills.length > 3 && (
+                                   <span className="px-2 py-0.5 rounded text-[10px] text-[var(--text-muted)]">+{student.skills.length - 3}</span>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="p-3 bg-[rgba(0,0,0,0.02)] dark:bg-[rgba(255,255,255,0.02)] flex justify-end gap-2 border-t border-[var(--border-color)]">
                           <button
                             type="button"
-                            className="table-icon-action table-icon-action-danger"
-                            title="Deactivate account"
-                            aria-label={`Deactivate ${displayStudentId(student)}`}
+                            className="flex items-center justify-center px-3 py-1.5 bg-rose-50/50 text-rose-600 hover:bg-rose-100 hover:text-rose-700 rounded-lg border border-rose-200 hover:border-rose-400 transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed"
+                            title="Delete Student"
                             disabled={!active || busy}
-                            onClick={() => setDeactivateTarget(student)}
+                            onClick={() => confirmDelete(setDeleteTarget(student))}
                           >
-                            {busy ? (
-                              <span className="table-icon-spinner" aria-hidden />
-                            ) : (
-                              <IconUserOff />
-                            )}
+                             <IconTrash />
                           </button>
+                          <Link
+                            to={`/admin/student/${student.id}`}
+                            className="px-4 py-1.5 bg-transparent hover:bg-[var(--accent-soft)] text-[var(--accent)] border border-[var(--border-color)] hover:border-[var(--accent)] rounded text-xs font-semibold transition-colors flex items-center gap-1.5"
+                          >
+                            <IconEye /> View Profile
+                          </Link>
                         </div>
-                      </td>
-                    </tr>
-                  )
-                })}
-            </tbody>
-          </table>
-        </div>
-      </section>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
 
-      {deactivateTarget && (
-        <div
-          className="modal-overlay"
-          role="presentation"
-          onClick={(e) => e.target === e.currentTarget && !deactivateSubmitting && setDeactivateTarget(null)}
-        >
-          <div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="deactivate-modal-title">
-            <h3 className="modal-title" id="deactivate-modal-title">
-              Deactivate student account?
-            </h3>
-            <p className="modal-text">
-              <strong>{displayStudentId(deactivateTarget)}</strong>
-              {deactivateTarget.full_name ? ` (${deactivateTarget.full_name})` : ''} will no longer be able to sign in.
-              Active sessions will stop working on the next request.
-            </p>
-            <div className="modal-actions">
-              <button type="button" className="btn btn-secondary" onClick={() => setDeactivateTarget(null)}>
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary btn-logout-confirm"
-                disabled={actionId === deactivateTarget.id}
-                onClick={confirmDeactivate}
-              >
-                {actionId === deactivateTarget.id ? 'Deactivating…' : 'Deactivate account'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+              {/* LIST VIEW */}
+              {viewMode === 'list' && (
+                <div className="bg-[var(--card-bg)] border border-[var(--border-color)] rounded-[var(--radius-lg)] overflow-hidden shadow-sm">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm whitespace-nowrap">
+                      <thead className="bg-[rgba(0,0,0,0.02)] dark:bg-[rgba(255,255,255,0.02)] border-b border-[var(--border-color)] text-[var(--text-muted)] text-[10px] uppercase tracking-widest font-bold">
+                        <tr>
+                          <th className="px-6 py-4">Student Name &amp; ID</th>
+                          <th className="px-6 py-4">Email</th>
+                          <th className="px-6 py-4">Program</th>
+                          <th className="px-6 py-4">Year Level</th>
+                          <th className="px-6 py-4">GPA</th>
+                          <th className="px-6 py-4 text-center">Enrollment</th>
+                          <th className="px-6 py-4 text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[var(--border-color)]">
+                        {filteredStudents.map((student) => {
+                          const active = isUserActive(student)
+                          const busy = actionId === student.id
+                          return (
+                            <tr key={student.id} className="hover:bg-[rgba(0,0,0,0.02)] dark:hover:bg-[rgba(255,255,255,0.01)] transition-colors">
+                              <td className="px-6 py-4">
+                                <div className="flex flex-col">
+                                  <span className="font-bold text-[var(--text)] text-sm">{student.full_name || 'Unnamed Student'}</span>
+                                  <span className="text-xs text-[var(--accent)] font-mono mt-0.5">{displayStudentId(student)}</span>
+                                </div>
+                              </td>
+                              <td className="px-6 py-4 text-[var(--text-muted)] text-xs truncate max-w-[180px]">
+                                {student.email || '—'}
+                              </td>
+                              <td className="px-6 py-4 text-[var(--text)] text-xs font-medium">
+                                {student.academic_info?.program || student.class_section || '—'}
+                              </td>
+                              <td className="px-6 py-4 text-[var(--text)] text-xs">
+                                {student.academic_info?.year_level || '—'}
+                              </td>
+                              <td className="px-6 py-4 text-[var(--text)] text-xs font-mono">
+                                {student.academic_info?.gpa ?? '—'}
+                              </td>
+                              <td className="px-6 py-4 text-center">
+                                <span className={`px-2.5 py-1 rounded text-[10px] font-bold uppercase tracking-wider inline-block ${
+                                  student.academic_info?.enrollment_status === 'Enrolled'
+                                    ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
+                                    : student.academic_info?.enrollment_status === 'Not Enrolled'
+                                    ? 'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-400'
+                                    : 'bg-[var(--border-color)] text-[var(--text-muted)]'
+                                }`}>
+                                  {student.academic_info?.enrollment_status || 'Unknown'}
+                                </span>
+                              </td>
+                              <td className="px-6 py-4 text-right">
+                                 <div className="flex items-center justify-end gap-3">
+                                   <button
+                                      type="button"
+                                      className="flex items-center justify-center px-4 py-2 bg-rose-50/50 text-rose-600 hover:bg-rose-100 hover:text-rose-700 rounded-lg border border-rose-200 hover:border-rose-400 transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed"
+                                      title="Delete Student"
+                                      disabled={!active || busy}
+                                      onClick={() => confirmDelete(setDeleteTarget(student))}
+                                    >
+                                       <IconTrash />
+                                    </button>
+                                    <Link
+                                      to={`/admin/student/${student.id}`}
+                                      className="flex items-center gap-1.5 px-3 py-1.5 bg-[var(--accent-soft)] hover:bg-[var(--accent)] text-[var(--accent)] hover:text-white rounded border border-transparent hover:border-[var(--accent)] transition-colors font-medium text-xs text-center"
+                                      title="View Profile"
+                                    >
+                                      <IconEye /> View
+                                    </Link>
+                                 </div>
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </section>
+      </div>
     </div>
   )
 }

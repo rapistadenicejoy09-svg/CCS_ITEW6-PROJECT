@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { apiAdminUser } from '../lib/api'
+import { apiAdminUser, apiAdminPatchUser } from '../lib/api'
 
 function getRole() {
   try {
@@ -12,128 +12,809 @@ function getRole() {
   }
 }
 
-function formatStudentType(t) {
-  if (t === 'irregular') return 'Irregular'
-  if (t === 'regular') return 'Regular'
-  return '—'
-}
+/* ─── Reusable field components using existing project CSS ─── */
 
-function displayStudentId(u) {
-  const sid = (u.student_id || '').trim()
-  if (sid) return sid
-  const leg = (u.identifier || '').trim()
-  if (leg && !leg.includes('@')) return leg
-  return '—'
-}
+const Label = ({ children, required }) => (
+  <label className="block text-[11px] font-bold uppercase tracking-wider text-[var(--text-muted)] mb-1.5">
+    {children}
+    {required && <span className="text-rose-500 ml-1">*</span>}
+  </label>
+)
+
+// Reuses the project's .search-input class from App.css
+const inputCls = 'search-input w-full disabled:opacity-60 disabled:cursor-not-allowed'
+
+const FInput = ({ className = '', ...props }) => (
+  <input className={`${inputCls} ${className}`} {...props} />
+)
+
+const FSelect = ({ children, className = '', ...props }) => (
+  <div className="relative">
+    <select className={`${inputCls} appearance-none pr-8 ${className}`} {...props}>
+      {children}
+    </select>
+    <div className="pointer-events-none absolute inset-y-0 right-3 flex items-center">
+      <svg width="10" height="6" viewBox="0 0 10 6" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M1 1L5 5L9 1" stroke="var(--text-muted)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+      </svg>
+    </div>
+  </div>
+)
+
+const FTextarea = ({ className = '', ...props }) => (
+  <textarea className={`${inputCls} resize-none ${className}`} {...props} />
+)
+
+const SectionTitle = ({ children }) => (
+  <div className="flex items-center gap-3 mb-5">
+    <span className="text-[11px] font-extrabold uppercase tracking-widest text-[var(--text-muted)] whitespace-nowrap">
+      {children}
+    </span>
+    <div className="flex-1 h-px bg-[var(--border-color)]" />
+  </div>
+)
+
+const Card = ({ children, className = '' }) => (
+  <div className={`bg-[var(--card-bg)] border border-[var(--border-color)] rounded-[var(--radius-lg)] p-6 shadow-sm ${className}`}>
+    {children}
+  </div>
+)
+
+const IconTrash = () => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="3 6 5 6 21 6" />
+    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+  </svg>
+)
+
+const IconAlert = () => (
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="10" />
+    <line x1="12" y1="8" x2="12" y2="12" />
+    <line x1="12" y1="16" x2="12.01" y2="16" />
+  </svg>
+)
+
+const AddRowBtn = ({ onClick, label }) => (
+  <button
+    type="button"
+    onClick={onClick}
+    style={{ border: '1px solid var(--border-color)', color: 'var(--text)' }}
+    className="mt-4 w-full py-2 text-xs font-semibold bg-transparent rounded-xl hover:bg-[var(--accent-soft)] hover:border-[var(--accent)] hover:text-[var(--accent)] transition-all duration-200"
+  >
+    {label}
+  </button>
+)
+
+const RemoveBtn = ({ onClick }) => (
+  <button
+    type="button"
+    onClick={onClick}
+    style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)' }}
+    className="w-7 h-7 flex items-center justify-center hover:text-rose-400 rounded-lg transition-all duration-200 text-sm font-bold flex-shrink-0"
+  >
+    ✕
+  </button>
+)
+
+const TableHead = ({ cols }) => (
+  <thead>
+    <tr className="border-b border-[var(--border-color)]">
+      {cols.map((c, i) => (
+        <th key={i} className="text-left text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)] px-3 py-3">
+          {c}
+        </th>
+      ))}
+      <th className="w-10" />
+    </tr>
+  </thead>
+)
+
+/* ════════════════════════════════════════════════════════════════ */
 
 export default function AdminStudentView() {
   const { id } = useParams()
-  const [user, setUser] = useState(null)
+  const [user, setUser]       = useState(null)
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
+  const [error, setError]     = useState('')
+  const [saving, setSaving]   = useState(false)
+  const [isEditing, setIsEditing] = useState(false)
+  const [formData, setFormData]   = useState({})
+  const [skillInput, setSkillInput] = useState('')
+  const [showDeactivateModal, setShowDeactivateModal] = useState(false)
+
   const isAdmin = getRole() === 'admin'
 
+  const pf = (patch) => setFormData(prev => ({ ...prev, ...patch }))
+  const pi = (patch) => setFormData(prev => ({
+    ...prev,
+    personalInformation: { ...prev.personalInformation, ...patch }
+  }))
+  const ai = (patch) => setFormData(prev => ({
+    ...prev,
+    academicInfo: { ...prev.academicInfo, ...patch }
+  }))
+
+  function buildForm(u) {
+    return {
+      firstName:  u.personal_information?.first_name || (u.full_name?.split(' ')[0] ?? ''),
+      lastName:   u.personal_information?.last_name  || (u.full_name?.split(' ').slice(1).join(' ') ?? ''),
+      studentId:  u.student_id || '',
+      email:      u.email || '',
+      isActive:   u.is_active === 1 || u.is_active === true,
+      personalInformation: {
+        phone:         u.personal_information?.phone || u.personal_information?.phone_number || '',
+        date_of_birth: u.personal_information?.date_of_birth || '',
+        gender:        u.personal_information?.gender || '',
+        address:       u.personal_information?.address || '',
+      },
+      academicInfo: {
+        program:           u.academic_info?.program || u.class_section || '',
+        year_level:        u.academic_info?.year_level || '',
+        gpa:               u.academic_info?.gpa ?? '',
+        enrollment_status: u.academic_info?.enrollment_status || 'Enrolled',
+      },
+      academicHistory:       u.academic_history        || [],
+      nonAcademicActivities: u.non_academic_activities || [],
+      violations:            u.violations              || [],
+      skills:                u.skills                  || [],
+      affiliations:          u.affiliations            || [],
+      studentType:           u.student_type            || 'regular',
+      classSection:          u.class_section           || '',
+    }
+  }
+
   useEffect(() => {
-    if (!isAdmin) {
-      setLoading(false)
-      return
-    }
+    if (!isAdmin) { setLoading(false); return }
     const token = localStorage.getItem('authToken')
-    if (!token) {
-      setError('Missing auth token.')
-      setLoading(false)
-      return
-    }
+    if (!token) { setError('Missing auth token.'); setLoading(false); return }
     let cancelled = false
     ;(async () => {
-      setLoading(true)
-      setError('')
+      setLoading(true); setError('')
       try {
         const res = await apiAdminUser(token, id)
-        const u = res?.user
-        if (!u || u.role !== 'student') {
-          throw new Error('Student not found.')
-        }
-        if (!cancelled) setUser(u)
+        const u   = res?.user
+        if (!u || u.role !== 'student') throw new Error('Student not found.')
+        if (!cancelled) { setUser(u); setFormData(buildForm(u)) }
       } catch (e) {
         if (!cancelled) setError(e?.message || 'Failed to load student.')
       } finally {
         if (!cancelled) setLoading(false)
       }
     })()
-    return () => {
-      cancelled = true
-    }
+    return () => { cancelled = true }
   }, [id, isAdmin])
 
-  if (!isAdmin) {
-    return (
-      <div className="module-page">
-        <p className="empty-state">This page is available for administrators only.</p>
-      </div>
-    )
+  async function handleSubmit(e) {
+    if (e) e.preventDefault()
+    const token = localStorage.getItem('authToken')
+    if (!token) return
+    setSaving(true); setError('')
+
+    // Validate dynamic sections for blank fields (Skills is exception)
+    const sections = [
+      { key: 'academicHistory', fields: ['semester', 'year', 'subjects', 'gpa'], label: 'Academic History' },
+      { key: 'nonAcademicActivities', fields: ['activity_name', 'type', 'role', 'year'], label: 'Non-Academic Activities' },
+      { key: 'violations', fields: ['description', 'date', 'severity', 'status'], label: 'Violations' },
+      { key: 'affiliations', fields: ['organization', 'position', 'role', 'year'], label: 'Affiliations' }
+    ]
+
+    for (const section of sections) {
+      const rows = formData[section.key] || []
+      for (const [idx, row] of rows.entries()) {
+        const isRowEmpty = section.fields.some(f => !String(row[f] || '').trim())
+        if (isRowEmpty) {
+          setError(`Please fill in all fields in row ${idx + 1} of the ${section.label} section.`)
+          setSaving(false)
+          window.scrollTo({ top: 0, behavior: 'smooth' })
+          return
+        }
+      }
+    }
+
+    try {
+      await apiAdminPatchUser(token, id, {
+        fullName: `${formData.firstName} ${formData.lastName}`.trim(),
+        email:    formData.email,
+        studentId: formData.studentId,
+        isActive:  formData.isActive,
+        studentType: formData.studentType,
+        classSection: formData.classSection,
+        personalInformation: {
+          ...formData.personalInformation,
+          first_name: formData.firstName,
+          last_name:  formData.lastName,
+        },
+        academicInfo:          formData.academicInfo,
+        academicHistory:       formData.academicHistory,
+        nonAcademicActivities: formData.nonAcademicActivities,
+        violations:            formData.violations,
+        skills:                formData.skills,
+        affiliations:          formData.affiliations,
+      })
+      const res = await apiAdminUser(token, id)
+      setUser(res.user)
+      setFormData(buildForm(res.user))
+      setIsEditing(false)
+      alert('Profile updated successfully')
+    } catch (err) {
+      setError(err?.message || 'Failed to update student.')
+    } finally {
+      setSaving(false)
+    }
   }
+
+  function handleCancelEdit() {
+    setIsEditing(false)
+    if (user) setFormData(buildForm(user))
+  }
+
+  function updateRow(key, index, patch) {
+    setFormData(prev => ({
+      ...prev,
+      [key]: prev[key].map((item, i) => i === index ? { ...item, ...patch } : item)
+    }))
+  }
+  function removeRow(key, index) {
+    setFormData(prev => ({ ...prev, [key]: prev[key].filter((_, i) => i !== index) }))
+  }
+  function addRow(key, template) {
+    setFormData(prev => ({ ...prev, [key]: [...prev[key], template] }))
+  }
+  function addSkill() {
+    const s = skillInput.trim()
+    if (!s || formData.skills.includes(s)) { setSkillInput(''); return }
+    pf({ skills: [...formData.skills, s] })
+    setSkillInput('')
+  }
+
+  /* ── Guards ── */
+  if (!isAdmin) return (
+    <div className="p-8 text-center text-[var(--text-muted)]">Administrators only.</div>
+  )
+  if (loading) return (
+    <div className="flex items-center justify-center p-16">
+      <div className="animate-spin rounded-full h-8 w-8 border-2 border-transparent border-t-[var(--accent)]" />
+    </div>
+  )
+  if (error && !user) return (
+    <div className="flex items-center justify-center p-8">
+      <div className="bg-rose-500/10 border border-rose-500/30 rounded-2xl p-6 max-w-sm text-center">
+        <p className="text-rose-400 text-sm mb-4">{error}</p>
+        <Link to="/student-profile" className="text-[var(--accent)] hover:underline text-sm">← Return to Directory</Link>
+      </div>
+    </div>
+  )
+
+  const fd = formData
 
   return (
     <div className="module-page">
-      <header className="module-header">
-        <div>
-          <h1 className="main-title">Student details</h1>
-          <p className="main-description">Read-only profile information for this account.</p>
-        </div>
-        <Link to="/student-profile" className="btn btn-secondary">
-          Back to list
-        </Link>
-      </header>
+      <div className="w-full space-y-5">
 
-      <section className="content-panel">
-        {loading && <p className="empty-state">Loading…</p>}
-        {!loading && error && <p className="auth-error">{error}</p>}
-        {!loading && !error && user && (
-          <dl className="detail-list" style={{ display: 'grid', gap: '12px', maxWidth: '480px' }}>
-            <div>
-              <dt style={{ fontSize: '12px', opacity: 0.75, marginBottom: '4px' }}>Student ID</dt>
-              <dd style={{ margin: 0, fontWeight: 600 }}>{displayStudentId(user)}</dd>
-            </div>
-            <div>
-              <dt style={{ fontSize: '12px', opacity: 0.75, marginBottom: '4px' }}>Email</dt>
-              <dd style={{ margin: 0 }}>{(user.email || '').trim() || '—'}</dd>
-            </div>
-            <div>
-              <dt style={{ fontSize: '12px', opacity: 0.75, marginBottom: '4px' }}>Full name</dt>
-              <dd style={{ margin: 0 }}>{user.full_name || '—'}</dd>
-            </div>
-            <div>
-              <dt style={{ fontSize: '12px', opacity: 0.75, marginBottom: '4px' }}>Class section</dt>
-              <dd style={{ margin: 0 }}>{user.class_section || '—'}</dd>
-            </div>
-            <div>
-              <dt style={{ fontSize: '12px', opacity: 0.75, marginBottom: '4px' }}>Student type</dt>
-              <dd style={{ margin: 0 }}>{formatStudentType(user.student_type)}</dd>
-            </div>
-            <div>
-              <dt style={{ fontSize: '12px', opacity: 0.75, marginBottom: '4px' }}>Two-factor</dt>
-              <dd style={{ margin: 0 }}>{user.twofa_enabled ? 'Enabled' : 'Disabled'}</dd>
-            </div>
-            <div>
-              <dt style={{ fontSize: '12px', opacity: 0.75, marginBottom: '4px' }}>Status</dt>
-              <dd style={{ margin: 0 }}>
-                {user.is_active ? (
-                  <span className="status-pill status-active">Active</span>
-                ) : (
-                  <span className="status-pill">Inactive</span>
-                )}
-              </dd>
-            </div>
-            <div>
-              <dt style={{ fontSize: '12px', opacity: 0.75, marginBottom: '4px' }}>Created</dt>
-              <dd style={{ margin: 0 }}>
-                {user.created_at ? new Date(user.created_at).toLocaleString() : '—'}
-              </dd>
-            </div>
-          </dl>
+        {/* ── PAGE HEADER ── */}
+        <header className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+          <div>
+            <h1 className="main-title font-extrabold text-[var(--text)] flex items-center gap-3">
+              {isEditing ? 'Edit Student Profile' : 'Student Profile'}
+              {!isEditing && (
+                <span className="text-[10px] font-bold uppercase tracking-widest bg-[var(--border-color)] text-[var(--text-muted)] px-2 py-1 rounded-md">
+                  Read-Only
+                </span>
+              )}
+            </h1>
+            <p className="main-description mt-1 flex items-center gap-2 text-[var(--text-muted)]">
+              ID:&nbsp;
+              <code className="text-[var(--accent)] bg-[var(--accent-soft)] px-2 py-0.5 rounded text-xs font-mono">
+                {user?.student_id}
+              </code>
+              <span className={`text-xs font-semibold ${user?.is_active ? 'text-emerald-400' : 'text-rose-400'}`}>
+                · {user?.is_active ? 'Active' : 'Inactive'}
+              </span>
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Link to="/student-profile" className="btn btn-secondary">
+              ← Back
+            </Link>
+            {!isEditing ? (
+              <button onClick={() => setIsEditing(true)} className="btn btn-primary">
+                Edit Profile
+              </button>
+            ) : (
+              <>
+                <button onClick={handleCancelEdit} disabled={saving} className="btn btn-secondary">
+                  Cancel
+                </button>
+                <button onClick={handleSubmit} disabled={saving} className="btn btn-primary">
+                  {saving ? 'Saving…' : 'Save Changes'}
+                </button>
+              </>
+            )}
+          </div>
+        </header>
+
+        {error && (
+          <div className="p-4 rounded-xl text-rose-400 bg-rose-500/10 border border-rose-500/20 text-sm">
+            {error}
+          </div>
         )}
-      </section>
+
+        {/* ══════════════════════════════════════════
+            TWO-COLUMN: Personal Info + Academic Info
+        ══════════════════════════════════════════ */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+
+          {/* LEFT — Personal Info */}
+          <Card>
+            <SectionTitle>Personal Info</SectionTitle>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+
+              <div>
+                <Label required>First Name</Label>
+                <FInput type="text" disabled={!isEditing}
+                  value={fd.firstName || ''} placeholder="First name"
+                  onChange={e => pf({ firstName: e.target.value })} />
+              </div>
+
+              <div>
+                <Label required>Last Name</Label>
+                <FInput type="text" disabled={!isEditing}
+                  value={fd.lastName || ''} placeholder="Last name"
+                  onChange={e => pf({ lastName: e.target.value })} />
+              </div>
+
+              <div>
+                <Label required>Student ID</Label>
+                <FInput type="text" disabled={!isEditing}
+                  value={fd.studentId || ''} placeholder="2024-00001"
+                  onChange={e => pf({ studentId: e.target.value })} />
+              </div>
+
+              <div>
+                <Label required>Email</Label>
+                <FInput type="email" disabled={!isEditing}
+                  value={fd.email || ''} placeholder="email@example.com"
+                  onChange={e => pf({ email: e.target.value })} />
+              </div>
+
+              <div>
+                <Label>Phone</Label>
+                <FInput type="text" inputMode="numeric" disabled={!isEditing}
+                  value={fd.personalInformation?.phone || ''} placeholder="09XXXXXXXXX"
+                  maxLength={11}
+                  onChange={e => pi({ phone: e.target.value.replace(/\D/g, '').slice(0, 11) })} />
+              </div>
+
+              <div>
+                <Label>Date of Birth</Label>
+                <FInput type="date" disabled={!isEditing}
+                  value={fd.personalInformation?.date_of_birth || ''}
+                  onChange={e => pi({ date_of_birth: e.target.value })} />
+              </div>
+
+              <div>
+                <Label>Gender</Label>
+                <FSelect disabled={!isEditing}
+                  value={fd.personalInformation?.gender || ''}
+                  onChange={e => pi({ gender: e.target.value })}>
+                  <option value="">Select gender</option>
+                  <option>Male</option>
+                  <option>Female</option>
+                  <option>Non-binary</option>
+                  <option>Prefer not to say</option>
+                </FSelect>
+              </div>
+
+              <div className="sm:col-span-2">
+                <Label>Address</Label>
+                <FTextarea disabled={!isEditing} rows={3}
+                  value={fd.personalInformation?.address || ''} placeholder="Full home address"
+                  onChange={e => pi({ address: e.target.value })} />
+              </div>
+
+            </div>
+          </Card>
+
+          {/* RIGHT — Academic Info */}
+          <Card>
+            <SectionTitle>Academic Info</SectionTitle>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+
+              <div className="sm:col-span-2">
+                <Label required>Program / Course</Label>
+                <FSelect disabled={!isEditing}
+                  value={fd.academicInfo?.program || ''}
+                  onChange={e => ai({ program: e.target.value })}>
+                  <option value="">Select program</option>
+                  <option value="CS">BS Computer Science (CS)</option>
+                  <option value="IT">BS Information Technology (IT)</option>
+                </FSelect>
+              </div>
+
+              <div>
+                <Label required>Year Level</Label>
+                <FSelect disabled={!isEditing}
+                  value={fd.academicInfo?.year_level || ''}
+                  onChange={e => ai({ year_level: e.target.value })}>
+                  <option value="">Select year</option>
+                  <option>1st Year</option>
+                  <option>2nd Year</option>
+                  <option>3rd Year</option>
+                  <option>4th Year</option>
+                </FSelect>
+              </div>
+
+              <div>
+                <Label required>Section</Label>
+                <FSelect 
+                  disabled={!isEditing || !fd.academicInfo?.year_level}
+                  value={fd.classSection || ''}
+                  onChange={e => pf({ classSection: e.target.value })}>
+                  <option value="">{fd.academicInfo?.year_level ? 'Select section' : 'Choose year first'}</option>
+                  {fd.academicInfo?.year_level === '1st Year' && (
+                    <optgroup label="1st Year">
+                      <option>1A</option><option>1B</option><option>1C</option><option>1D</option><option>1E</option>
+                    </optgroup>
+                  )}
+                  {fd.academicInfo?.year_level === '2nd Year' && (
+                    <optgroup label="2nd Year">
+                      <option>2A</option><option>2B</option><option>2C</option><option>2D</option><option>2E</option>
+                    </optgroup>
+                  )}
+                  {fd.academicInfo?.year_level === '3rd Year' && (
+                    <optgroup label="3rd Year">
+                      <option>3A</option><option>3B</option><option>3C</option><option>3D</option><option>3E</option>
+                    </optgroup>
+                  )}
+                  {fd.academicInfo?.year_level === '4th Year' && (
+                    <optgroup label="4th Year">
+                      <option>4A</option><option>4B</option><option>4C</option><option>4D</option><option>4E</option>
+                    </optgroup>
+                  )}
+                </FSelect>
+              </div>
+
+              <div>
+                <Label required>Type</Label>
+                <FSelect disabled={!isEditing}
+                  value={fd.studentType || 'regular'}
+                  onChange={e => pf({ studentType: e.target.value })}>
+                  <option value="regular">Regular</option>
+                  <option value="irregular">Irregular</option>
+                </FSelect>
+              </div>
+
+              <div>
+                <Label>GPA</Label>
+                <FInput type="number" step="0.01" min="1" max="5"
+                  disabled={!isEditing}
+                  value={fd.academicInfo?.gpa ?? ''} placeholder="e.g. 1.75"
+                  onChange={e => ai({ gpa: e.target.value })} />
+              </div>
+
+              <div className="sm:col-span-2">
+                <Label>Enrollment Status</Label>
+                <FSelect disabled={!isEditing}
+                  value={fd.academicInfo?.enrollment_status || ''}
+                  onChange={e => ai({ enrollment_status: e.target.value })}>
+                  <option value="Enrolled">Enrolled</option>
+                  <option value="Not Enrolled">Not Enrolled</option>
+                </FSelect>
+              </div>
+
+              <div className="sm:col-span-2">
+                <div className="flex items-center gap-3 p-3 rounded-xl border border-[var(--border-color)] bg-[rgba(255,255,255,0.02)]">
+                  <input id="isActive" type="checkbox"
+                    disabled={!isEditing}
+                    checked={fd.isActive ?? true}
+                    onChange={e => {
+                      if (!e.target.checked) {
+                        setShowDeactivateModal(true)
+                      } else {
+                        pf({ isActive: true })
+                      }
+                    }}
+                    className="w-4 h-4 accent-[var(--accent)] cursor-pointer disabled:cursor-not-allowed disabled:opacity-60" />
+                  <label htmlFor="isActive" className="text-sm text-[var(--text)] select-none cursor-pointer">
+                    Account is Active
+                  </label>
+                </div>
+              </div>
+
+            </div>
+          </Card>
+        </div>
+
+        {/* ══════════════════════════════════════════
+            FULL-WIDTH SECTIONS
+        ══════════════════════════════════════════ */}
+
+        {/* Academic History */}
+        <Card>
+          <SectionTitle>Academic History</SectionTitle>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm border-collapse">
+              <TableHead cols={['Semester', 'Year', 'Subjects', 'GPA']} />
+              <tbody>
+                {fd.academicHistory?.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="py-8 text-center text-[var(--text-muted)] text-xs italic">
+                      No records yet.
+                    </td>
+                  </tr>
+                )}
+                {fd.academicHistory?.map((row, i) => (
+                  <tr key={i} className="border-b border-[var(--border-color)] last:border-0">
+                    <td className="px-3 py-2.5">
+                      <FInput disabled={!isEditing} placeholder="e.g. 1st Sem"
+                        value={row.semester || ''} onChange={e => updateRow('academicHistory', i, { semester: e.target.value })} />
+                    </td>
+                    <td className="px-3 py-2.5 w-32">
+                      <FInput disabled={!isEditing} placeholder="2024"
+                        value={row.year || ''} onChange={e => updateRow('academicHistory', i, { year: e.target.value })} />
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <FInput disabled={!isEditing} placeholder="e.g. Math, English"
+                        value={row.subjects || ''} onChange={e => updateRow('academicHistory', i, { subjects: e.target.value })} />
+                    </td>
+                    <td className="px-3 py-2.5 w-28">
+                      <FInput type="number" step="0.01" disabled={!isEditing} placeholder="1.75"
+                        value={row.gpa || ''} onChange={e => updateRow('academicHistory', i, { gpa: e.target.value })} />
+                    </td>
+                    <td className="px-3 py-2.5 text-center w-10">
+                      {isEditing && <RemoveBtn onClick={() => removeRow('academicHistory', i)} />}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {isEditing && (
+            <AddRowBtn
+              onClick={() => addRow('academicHistory', { semester: '', year: '', subjects: '', gpa: '' })}
+              label="+ Add Semester"
+            />
+          )}
+        </Card>
+
+        {/* Non-Academic Activities */}
+        <Card>
+          <SectionTitle>Non-Academic Activities</SectionTitle>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm border-collapse">
+              <TableHead cols={['Activity Name', 'Type', 'Role', 'Year']} />
+              <tbody>
+                {fd.nonAcademicActivities?.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="py-8 text-center text-[var(--text-muted)] text-xs italic">
+                      No records yet.
+                    </td>
+                  </tr>
+                )}
+                {fd.nonAcademicActivities?.map((row, i) => (
+                  <tr key={i} className="border-b border-[var(--border-color)] last:border-0">
+                    <td className="px-3 py-2.5">
+                      <FInput disabled={!isEditing} placeholder="Activity name"
+                        value={row.activity_name || ''} onChange={e => updateRow('nonAcademicActivities', i, { activity_name: e.target.value })} />
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <FInput disabled={!isEditing} placeholder="e.g. Sports"
+                        value={row.type || ''} onChange={e => updateRow('nonAcademicActivities', i, { type: e.target.value })} />
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <FInput disabled={!isEditing} placeholder="e.g. Captain"
+                        value={row.role || ''} onChange={e => updateRow('nonAcademicActivities', i, { role: e.target.value })} />
+                    </td>
+                    <td className="px-3 py-2.5 w-28">
+                      <FInput disabled={!isEditing} placeholder="2023"
+                        value={row.year || ''} onChange={e => updateRow('nonAcademicActivities', i, { year: e.target.value })} />
+                    </td>
+                    <td className="px-3 py-2.5 text-center w-10">
+                      {isEditing && <RemoveBtn onClick={() => removeRow('nonAcademicActivities', i)} />}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {isEditing && (
+            <AddRowBtn
+              onClick={() => addRow('nonAcademicActivities', { activity_name: '', type: '', role: '', year: '' })}
+              label="+ Add Activity"
+            />
+          )}
+        </Card>
+
+        {/* Violations */}
+        <Card>
+          <SectionTitle>Violations</SectionTitle>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm border-collapse">
+              <TableHead cols={['Description', 'Date', 'Severity', 'Status']} />
+              <tbody>
+                {fd.violations?.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="py-8 text-center text-[var(--text-muted)] text-xs italic">
+                      No violations on record.
+                    </td>
+                  </tr>
+                )}
+                {fd.violations?.map((row, i) => (
+                  <tr key={i} className="border-b border-[var(--border-color)] last:border-0">
+                    <td className="px-3 py-2.5 min-w-[200px]">
+                      <FInput disabled={!isEditing} placeholder="Describe violation"
+                        value={row.description || ''} onChange={e => updateRow('violations', i, { description: e.target.value })} />
+                    </td>
+                    <td className="px-3 py-2.5 w-40">
+                      <FInput type="date" disabled={!isEditing}
+                        value={row.date || ''} onChange={e => updateRow('violations', i, { date: e.target.value })} />
+                    </td>
+                    <td className="px-3 py-2.5 w-36">
+                      <FSelect disabled={!isEditing}
+                        value={row.severity || ''} onChange={e => updateRow('violations', i, { severity: e.target.value })}>
+                        <option value="">Severity</option>
+                        <option>Minor</option>
+                        <option>Major</option>
+                        <option>Critical</option>
+                      </FSelect>
+                    </td>
+                    <td className="px-3 py-2.5 w-36">
+                      <FSelect disabled={!isEditing}
+                        value={row.status || ''} onChange={e => updateRow('violations', i, { status: e.target.value })}>
+                        <option value="">Status</option>
+                        <option>Pending</option>
+                        <option>Resolved</option>
+                        <option>Appealed</option>
+                      </FSelect>
+                    </td>
+                    <td className="px-3 py-2.5 text-center w-10">
+                      {isEditing && <RemoveBtn onClick={() => removeRow('violations', i)} />}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {isEditing && (
+            <AddRowBtn
+              onClick={() => addRow('violations', { description: '', date: '', severity: '', status: '' })}
+              label="+ Add Violation"
+            />
+          )}
+        </Card>
+
+        {/* Skills */}
+        <Card>
+          <SectionTitle>Skills</SectionTitle>
+          <div className="flex flex-wrap gap-2 min-h-[32px]">
+            {fd.skills?.length === 0 && !isEditing && (
+              <p className="text-[var(--text-muted)] text-xs italic">No skills listed.</p>
+            )}
+            {fd.skills?.map((skill, i) => (
+              <span
+                key={i}
+                className="inline-flex items-center gap-1.5 bg-[var(--accent-soft)] border border-[var(--accent)]/25 text-[var(--accent)] text-xs font-semibold px-3 py-1.5 rounded-full"
+              >
+                {skill}
+                {isEditing && (
+                  <button
+                    type="button"
+                    onClick={() => pf({ skills: fd.skills.filter((_, j) => j !== i) })}
+                    style={{ background: 'transparent', border: 'none', color: 'var(--accent)' }}
+                    className="hover:text-rose-400 transition-colors leading-none"
+                  >
+                    ✕
+                  </button>
+                )}
+              </span>
+            ))}
+          </div>
+          {isEditing && (
+            <div className="flex gap-2 mt-4">
+              <FInput
+                type="text"
+                placeholder="Add a skill…"
+                value={skillInput}
+                onChange={e => setSkillInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addSkill() } }}
+                className="flex-1"
+              />
+              <button
+                type="button"
+                onClick={addSkill}
+                style={{ border: '1px solid var(--border-color)', color: 'var(--text)' }}
+                className="px-5 py-2 bg-transparent shrink-0 rounded-xl text-xs font-semibold cursor-pointer transition-all duration-200 hover:bg-[var(--accent-soft)] hover:border-[var(--accent)] hover:text-[var(--accent)]"
+              >
+                Add
+              </button>
+            </div>
+          )}
+        </Card>
+
+        {/* Affiliations */}
+        <Card>
+          <SectionTitle>Affiliations</SectionTitle>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm border-collapse">
+              <TableHead cols={['Organization', 'Position', 'Year']} />
+              <tbody>
+                {fd.affiliations?.length === 0 && (
+                  <tr>
+                    <td colSpan={4} className="py-8 text-center text-[var(--text-muted)] text-xs italic">
+                      No affiliations yet.
+                    </td>
+                  </tr>
+                )}
+                {fd.affiliations?.map((row, i) => (
+                  <tr key={i} className="border-b border-[var(--border-color)] last:border-0">
+                    <td className="px-3 py-2.5">
+                      <FInput disabled={!isEditing} placeholder="Organization name"
+                        value={row.organization || ''} onChange={e => updateRow('affiliations', i, { organization: e.target.value })} />
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <FInput disabled={!isEditing} placeholder="e.g. President"
+                        value={row.position || row.role || ''} onChange={e => updateRow('affiliations', i, { position: e.target.value, role: e.target.value })} />
+                    </td>
+                    <td className="px-3 py-2.5 w-28">
+                      <FInput disabled={!isEditing} placeholder="2023"
+                        value={row.year || ''} onChange={e => updateRow('affiliations', i, { year: e.target.value })} />
+                    </td>
+                    <td className="px-3 py-2.5 text-center w-10">
+                      {isEditing && <RemoveBtn onClick={() => removeRow('affiliations', i)} />}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {isEditing && (
+            <AddRowBtn
+              onClick={() => addRow('affiliations', { organization: '', position: '', role: '', year: '' })}
+              label="+ Add Affiliation"
+            />
+          )}
+        </Card>
+
+      </div>
+
+      {/* ── DEACTIVATE CONFIRMATION MODAL ── */}
+      {showDeactivateModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/5 backdrop-blur-[1.5px]" onClick={() => setShowDeactivateModal(false)} />
+          <div className="relative bg-[var(--card-bg)] backdrop-blur-xl border border-[var(--border-color)] rounded-[var(--radius-lg)] p-7 max-w-sm w-full shadow-2xl animate-in fade-in zoom-in duration-200">
+            <div className="flex flex-col items-center text-center">
+              <div className="w-14 h-14 bg-[var(--accent-soft)] text-[var(--accent)] rounded-full flex items-center justify-center mb-5 ring-4 ring-[var(--accent-soft)]">
+                <IconAlert />
+              </div>
+              <h3 className="text-xl font-bold text-[var(--text)] mb-3">Deactivate Profile?</h3>
+              <p className="text-sm text-[var(--text-muted)] mb-8 leading-relaxed">
+                This student will be barred from logging in and accessing any portal features. You can reactivate this profile at any time.
+              </p>
+              <div className="flex w-full gap-3">
+                <button 
+                  onClick={() => setShowDeactivateModal(false)}
+                  className="flex-1 px-4 py-3 text-sm font-semibold text-[var(--text-muted)] hover:text-[var(--text)] bg-white/5 hover:bg-white/10 border border-white/5 rounded-xl transition-all duration-200"
+                  type="button"
+                >
+                  Keep Active
+                </button>
+                <button 
+                  onClick={() => {
+                    pf({ isActive: false })
+                    setShowDeactivateModal(false)
+                  }}
+                  className="flex-1 px-4 py-3 text-sm font-semibold bg-[var(--accent)] text-white rounded-xl hover:brightness-110 shadow-lg shadow-[var(--accent)]/20 transition-all duration-200"
+                  type="button"
+                >
+                  Deactivate
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -21,7 +21,14 @@ const SESSION_TTL_HOURS = 24
 const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next)
 
 // Provider init is async for MongoDB; keep server startup blocked until the store is ready.
-const store = await openStore()
+let store
+try {
+  store = await openStore()
+} catch (err) {
+  // eslint-disable-next-line no-console
+  console.error('Failed to open datastore:', err)
+  process.exit(1)
+}
 
 const app = express()
 app.use(helmet())
@@ -191,24 +198,38 @@ app.post('/api/auth/register', asyncHandler(async (req, res) => {
     }
     const existing = await store.findUserByIdentifier(identifier)
     if (existing) return res.status(409).json({ error: 'Account already exists' })
+    if (identifier.includes('@')) {
+      emailStored = identifier
+    }
   }
 
   const passwordHash = hashPassword(password)
   const backupCode = enable2FA ? generateBackupCode() : null
 
-  await store.createUser({
-    role,
-    identifier,
-    fullName,
-    passwordHash,
-    enable2FA,
-    backupCode,
-    createdAtIso: nowIso(),
-    classSection,
-    studentType,
-    studentIdStored,
-    emailStored,
-  })
+  try {
+    await store.createUser({
+      role,
+      identifier,
+      fullName,
+      passwordHash,
+      enable2FA,
+      backupCode,
+      createdAtIso: nowIso(),
+      classSection,
+      studentType,
+      studentIdStored,
+      emailStored,
+      academicInfo: req.body?.academicInfo || {},
+      personalInformation: req.body?.personalInformation || {},
+      academicHistory: req.body?.academicHistory || [],
+      nonAcademicActivities: req.body?.nonAcademicActivities || [],
+      violations: req.body?.violations || [],
+      skills: req.body?.skills || [],
+      affiliations: req.body?.affiliations || [],
+    })
+  } catch (err) {
+    return res.status(500).json({ error: err.message })
+  }
 
   return res.status(201).json({ ok: true, twoFABackupCode: backupCode })
 }))
@@ -341,18 +362,76 @@ app.patch('/api/admin/users/:id', authMiddleware, authorize(PERMISSIONS.MANAGE_U
   if (target.role !== 'student') {
     return res.status(400).json({ error: 'Only student accounts can be updated this way' })
   }
-  if (typeof req.body?.isActive !== 'boolean') {
-    return res.status(400).json({ error: 'Expected isActive boolean' })
+  const updates = {}
+  if (req.body.isActive !== undefined) {
+    if (typeof req.body.isActive !== 'boolean') {
+      return res.status(400).json({ error: 'isActive must be boolean' })
+    }
+    updates.is_active = req.body.isActive
+    console.log('[DEBUG] Setting updates.is_active to:', updates.is_active)
   }
-  const user = await store.updateUserIsActive(id, req.body.isActive)
+  if (req.body.personalInformation !== undefined) {
+    updates.personal_information = req.body.personalInformation
+  }
+  if (req.body.academicInfo !== undefined) {
+    updates.academic_info = req.body.academicInfo
+  }
+  if (req.body.academicHistory !== undefined) {
+    updates.academic_history = req.body.academicHistory
+  }
+  if (req.body.nonAcademicActivities !== undefined) {
+    updates.non_academic_activities = req.body.nonAcademicActivities
+  }
+  if (req.body.violations !== undefined) {
+    updates.violations = req.body.violations
+  }
+  if (req.body.skills !== undefined) {
+    updates.skills = req.body.skills
+  }
+  if (req.body.affiliations !== undefined) {
+    updates.affiliations = req.body.affiliations
+  }
+  if (req.body.fullName !== undefined) {
+    updates.full_name = req.body.fullName
+  }
+  if (req.body.email !== undefined) {
+    updates.email = req.body.email
+  }
+  if (req.body.classSection !== undefined) {
+    updates.class_section = req.body.classSection
+  }
+  if (req.body.studentType !== undefined) {
+    updates.student_type = req.body.studentType
+  }
+  if (req.body.studentId !== undefined) {
+    updates.student_id = req.body.studentId
+  }
+  if (Object.keys(updates).length === 0) {
+    return res.status(400).json({ error: 'No valid updates provided' })
+  }
+  const user = await store.updateStudentProfile(id, updates)
   res.json({ ok: true, user })
 }))
 
-// eslint-disable-next-line no-unused-vars
+app.get('/api/admin/students', authMiddleware, authorize(PERMISSIONS.MANAGE_USERS), asyncHandler(async (req, res) => {
+  const { skill, affiliation } = req.query
+  let students = []
+  if (skill) {
+    students = await store.findStudentsBySkill(skill)
+  } else if (affiliation) {
+    students = await store.findStudentsByAffiliation(affiliation)
+  } else {
+    // Default to all students
+    const users = await store.listAdminUsers()
+    students = users.filter(u => u.role === 'student')
+  }
+  res.json({ ok: true, students })
+}))
+
 app.use((err, req, res, _next) => {
   // eslint-disable-next-line no-console
   console.error('Unhandled API error:', err)
-  res.status(500).json({ error: 'Internal server error' })
+  res.status(500).json({ error: err.message || 'Internal server error' })
 })
 
 const MAX_PORT_TRIES = 20
