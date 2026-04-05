@@ -341,7 +341,7 @@ export default function AdminStudentView() {
               <code className="text-[var(--accent)] bg-[var(--accent-soft)] px-2 py-0.5 rounded text-xs font-mono">
                 {user?.student_id}
               </code>
-              <span className={`text-xs font-semibold ${user?.is_active ? 'text-emerald-400' : 'text-rose-400'}`}>
+              <span className={`text-xs font-semibold ${user?.is_active ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
                 · {user?.is_active ? 'Active' : 'Inactive'}
               </span>
             </p>
@@ -613,10 +613,10 @@ export default function AdminStudentView() {
                     <span
                       className={`px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider inline-flex ${
                         fd.academicInfo?.enrollment_status === 'Enrolled'
-                          ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/25'
+                          ? 'tag-enrolled'
                           : fd.academicInfo?.enrollment_status === 'Not Enrolled'
-                            ? 'bg-rose-500/15 text-rose-700 dark:text-rose-400 border border-rose-500/25'
-                            : 'bg-[var(--border-color)]/40 text-[var(--text-muted)] border border-[var(--border-color)]'
+                            ? 'tag-not-enrolled'
+                            : 'tag-unknown'
                       }`}
                     >
                       {fd.academicInfo?.enrollment_status || '—'}
@@ -647,10 +647,10 @@ export default function AdminStudentView() {
                     <Label>Account status</Label>
                     <div className="min-h-[44px] flex items-center">
                       <span
-                        className={`px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider border ${
+                        className={`px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider shadow-sm ${
                           fd.isActive
-                            ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/25'
-                            : 'bg-rose-500/15 text-rose-700 dark:text-rose-400 border border-rose-500/25'
+                            ? 'tag-active'
+                            : 'tag-inactive'
                         }`}
                       >
                         {fd.isActive ? 'Active account' : 'Inactive account'}
