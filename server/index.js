@@ -646,5 +646,9 @@ function startListening(port, triesLeft) {
   })
 }
 
-startListening(PORT, MAX_PORT_TRIES)
+if (!process.env.VERCEL) {
+  startListening(PORT, MAX_PORT_TRIES)
+}
+
+export default app
 
