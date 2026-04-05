@@ -1,4 +1,5 @@
 node_modules/
+dist/
 
 # Local-only SQLite runtime sidecar files
 data/*.sqlite-wal

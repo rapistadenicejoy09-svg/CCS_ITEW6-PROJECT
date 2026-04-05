@@ -48,7 +48,30 @@ function deriveStudentRootNames(personalInformation, fullNameFallback) {
   }
 }
 
+let mongoStoreInitPromise = null
+
+/**
+ * Reuse one Mongo store (and underlying client) per serverless isolate to avoid connection storms on Vercel.
+ */
 export async function openMongoStore() {
+  if (globalThis.__ccs_mongo_store) {
+    return globalThis.__ccs_mongo_store
+  }
+  if (!mongoStoreInitPromise) {
+    mongoStoreInitPromise = createMongoStore()
+      .then((store) => {
+        globalThis.__ccs_mongo_store = store
+        return store
+      })
+      .catch((err) => {
+        mongoStoreInitPromise = null
+        throw err
+      })
+  }
+  return mongoStoreInitPromise
+}
+
+async function createMongoStore() {
   const mongoUri = String(process.env.MONGODB_URI || '').trim()
   if (!mongoUri) {
     throw new Error('Missing MONGODB_URI. This project uses MongoDB only; set MONGODB_URI (and optional MONGODB_DB).')

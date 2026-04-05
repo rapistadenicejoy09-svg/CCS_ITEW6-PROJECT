@@ -19,6 +19,18 @@ const DEFAULT_API_CANDIDATES = buildDefaultCandidates()
 
 const IS_PROD_BUILD = import.meta.env.PROD
 
+/** True when the UI is opened from a real host (e.g. vercel.app), not local dev. */
+function isNonLocalDeployedHost() {
+  if (typeof window === 'undefined' || !window.location?.hostname) return false
+  const h = window.location.hostname
+  return h !== 'localhost' && h !== '127.0.0.1' && h !== '[::1]'
+}
+
+/** Never use localhost discovery when shipped to a public URL (even if PROD flag were wrong). */
+function forbidLocalhostFallback() {
+  return IS_PROD_BUILD || isNonLocalDeployedHost()
+}
+
 let resolvedApiBasePromise = null
 
 async function fetchWithTimeout(url, { timeoutMs = 800, ...options } = {}) {
@@ -31,18 +43,30 @@ async function fetchWithTimeout(url, { timeoutMs = 800, ...options } = {}) {
   }
 }
 
-function isLocalhostCacheInvalidInProd(cached) {
-  if (!IS_PROD_BUILD || !cached) return false
-  return /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\/?$/i.test(String(cached).trim())
+async function sameOriginHealthOk() {
+  try {
+    const res = await fetchWithTimeout('/api/health', { method: 'GET', timeoutMs: 600 })
+    if (!res.ok) return false
+    const data = await res.json().catch(() => null)
+    return Boolean(data && data.ok === true)
+  } catch {
+    return false
+  }
+}
+
+function isLocalhostApiUrl(url) {
+  return /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\/?$/i.test(String(url || '').trim())
 }
 
 async function resolveApiBase() {
   if (CONFIGURED_API_BASE) return CONFIGURED_API_BASE
 
+  const noLocal = forbidLocalhostFallback()
+
   const cachedRaw =
     typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('ccs_api_base') : null
   if (cachedRaw !== null && cachedRaw !== undefined) {
-    if (isLocalhostCacheInvalidInProd(cachedRaw)) {
+    if (noLocal && cachedRaw !== '' && isLocalhostApiUrl(cachedRaw)) {
       try {
         sessionStorage.removeItem('ccs_api_base')
       } catch {
@@ -53,36 +77,30 @@ async function resolveApiBase() {
     }
   }
 
-  // Prefer same-origin (works if the API is reverse-proxied with the static site).
-  try {
-    const res = await fetchWithTimeout('/api/health', { method: 'GET', timeoutMs: 600 })
-    if (res.ok) {
-      if (typeof sessionStorage !== 'undefined') sessionStorage.setItem('ccs_api_base', '')
-      return ''
-    }
-  } catch {
-    // ignore
+  // Same-origin API (e.g. reverse proxy). Reject SPA/HTML 200 responses: real server returns { ok: true } JSON.
+  if (await sameOriginHealthOk()) {
+    if (typeof sessionStorage !== 'undefined') sessionStorage.setItem('ccs_api_base', '')
+    return ''
   }
 
-  // Production static hosting (e.g. Vercel): never fall back to scanning localhost.
-  if (IS_PROD_BUILD) {
+  if (noLocal) {
     return null
   }
 
-  // Dev fallback: detect which localhost backend port is actually alive.
+  // Local dev: detect which localhost backend port is actually alive.
   for (const base of DEFAULT_API_CANDIDATES) {
     try {
       const res = await fetchWithTimeout(`${base}/api/health`, { method: 'GET', timeoutMs: 800 })
-      if (res.ok) {
-        if (typeof sessionStorage !== 'undefined') sessionStorage.setItem('ccs_api_base', base)
-        return base
-      }
+      if (!res.ok) continue
+      const data = await res.json().catch(() => null)
+      if (!data || data.ok !== true) continue
+      if (typeof sessionStorage !== 'undefined') sessionStorage.setItem('ccs_api_base', base)
+      return base
     } catch {
       // ignore
     }
   }
 
-  // Last resort (local dev).
   return DEFAULT_API_CANDIDATES[0]
 }
 
@@ -101,7 +119,7 @@ async function getApiBase() {
       const base = await resolveApiBase()
       if (base === null) {
         const err = new Error(
-          'Missing VITE_API_BASE: In Vercel → Project → Settings → Environment Variables, add VITE_API_BASE with your deployed API URL (https://…, no trailing slash), then redeploy. On your API host set CORS_ORIGINS to this site’s origin.',
+          'API unreachable from this site. On Vercel: add MONGODB_URI (and MONGODB_DB if needed), redeploy, and ensure /api/health returns JSON. Optional: set VITE_API_BASE only if the API is on another origin. For custom domains, add CORS_ORIGINS on the server.',
         )
         err.isConfigError = true
         throw err
@@ -110,6 +128,19 @@ async function getApiBase() {
     })()
   }
   return resolvedApiBasePromise
+}
+
+function labelApiBaseForError(base) {
+  if (base === '' || base == null) {
+    return '(same origin — if the API is elsewhere, set VITE_API_BASE on Vercel and redeploy)'
+  }
+  return base
+}
+
+function fallbackBaseForErrorMessage() {
+  if (CONFIGURED_API_BASE) return CONFIGURED_API_BASE
+  if (forbidLocalhostFallback()) return ''
+  return DEFAULT_API_CANDIDATES[0]
 }
 
 async function request(path, options = {}) {
@@ -126,8 +157,6 @@ async function request(path, options = {}) {
         },
       })
     } catch {
-      // If the cached/resolved base is stale (e.g. backend moved from 5001 -> 5003),
-      // clear it and retry resolution once.
       clearCachedApiBase()
       API_BASE = await getApiBase()
       res = await fetch(`${API_BASE}${path}`, {
@@ -140,8 +169,8 @@ async function request(path, options = {}) {
     }
   } catch (e) {
     if (e && e.isConfigError) throw e
-    const API_BASE = await getApiBase().catch(() => CONFIGURED_API_BASE || DEFAULT_API_CANDIDATES[0])
-    const shown = API_BASE ? API_BASE : '(same origin)'
+    const API_BASE = await getApiBase().catch(() => fallbackBaseForErrorMessage())
+    const shown = labelApiBaseForError(API_BASE)
     const err = new Error(`Unable to reach API server at ${shown}. Is the backend running?`)
     err.cause = e
     throw err

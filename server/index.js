@@ -27,10 +27,50 @@ try {
 } catch (err) {
   // eslint-disable-next-line no-console
   console.error('Failed to open datastore:', err)
-  process.exit(1)
+  if (!process.env.VERCEL) {
+    process.exit(1)
+  }
+  // On Vercel the process is reused for the serverless isolate; defer hard fail to request handling.
+  store = null
 }
 
 const app = express()
+
+/** Vercel rewrites strip the real path; restore so Express `/api/...` routes match. */
+function vercelRestoreRequestUrl(req, _res, next) {
+  if (!process.env.VERCEL) return next()
+  const candidates = [
+    req.headers['x-invoke-path'],
+    req.headers['x-vercel-invoke-path'],
+    req.headers['x-forwarded-uri'],
+    req.headers['x-matched-path'],
+    req.headers['x-vercel-original-path'],
+    req.headers[':path'],
+  ]
+  for (const raw of candidates) {
+    if (!raw || typeof raw !== 'string') continue
+    try {
+      let pathPart = raw
+      if (pathPart.startsWith('http')) {
+        const u = new URL(pathPart)
+        pathPart = u.pathname + u.search
+      }
+      if (pathPart.startsWith('/')) {
+        req.url = pathPart
+        if (req.originalUrl != null) req.originalUrl = pathPart
+        break
+      }
+    } catch {
+      // try next header
+    }
+  }
+  next()
+}
+
+if (process.env.VERCEL) {
+  app.set('trust proxy', true)
+}
+app.use(vercelRestoreRequestUrl)
 app.use(helmet())
 
 const configuredCorsOrigins = String(process.env.CORS_ORIGINS || '')
@@ -52,8 +92,17 @@ app.use(
         return cb(null, configuredCorsOrigins.includes(origin))
       }
 
+      // Same Vercel project (frontend + API): allow deployment and branch preview URLs.
+      const vu = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : ''
+      const vb = process.env.VERCEL_BRANCH_URL ? `https://${process.env.VERCEL_BRANCH_URL}` : ''
+      if (vu && origin === vu) return cb(null, true)
+      if (vb && origin === vb) return cb(null, true)
+
       // Dev default: allow Vite on any localhost port (5173, 5174, etc.).
       if (isDev && isLocalViteOrigin(origin)) return cb(null, true)
+
+      // Vercel + no explicit list: allow any origin (custom domains differ from VERCEL_URL; API uses Bearer tokens).
+      if (process.env.VERCEL) return cb(null, true)
 
       return cb(null, false)
     },
@@ -67,8 +116,24 @@ app.use(
     max: 120,
     standardHeaders: true,
     legacyHeaders: false,
+    validate: { xForwardedForHeader: false },
   })
 )
+
+function apiPathOnly(req) {
+  const u = String(req.url || '').split('?')[0]
+  return u
+}
+
+app.use((req, res, next) => {
+  if (store) return next()
+  const p = apiPathOnly(req)
+  if (p === '/api/health') return next()
+  return res.status(503).json({
+    error:
+      'Database unavailable. Add MONGODB_URI (and MONGODB_DB if your URI has no database name) in Vercel → Project → Settings → Environment Variables, then redeploy.',
+  })
+})
 
 function nowIso() {
   return new Date().toISOString()
