@@ -60,6 +60,21 @@ app.use(
     credentials: false,
   })
 )
+
+app.get('/api/health', (req, res) => res.json({ ok: true }))
+app.get('/', (req, res) => {
+  res.send(`
+    <html>
+      <body style="font-family: sans-serif; padding: 2rem; line-height: 1.5;">
+        <h2>CCS Profiling System API</h2>
+        <p>The backend server is running successfully.</p>
+        <p>To access the application, please visit the frontend at:</p>
+        <a href="http://localhost:5173" style="font-weight: bold; color: #4f46e5;">http://localhost:5173</a>
+      </body>
+    </html>
+  `)
+})
+
 app.use(express.json({ limit: '200kb' }))
 app.use(
   rateLimit({
@@ -294,7 +309,7 @@ app.post('/api/auth/register', asyncHandler(async (req, res) => {
   let fullName = String(req.body?.fullName || '').trim() || null
   const enable2FA = Boolean(req.body?.enable2FA)
 
-  if (!['admin', 'student', 'faculty'].includes(role)) {
+  if (!['admin', 'student', 'faculty', 'dean', 'department_chair', 'secretary', 'faculty_professor'].includes(role)) {
     return res.status(400).json({ error: 'Invalid role' })
   }
   if (!password || password.length < 8) {
@@ -306,6 +321,7 @@ app.post('/api/auth/register', asyncHandler(async (req, res) => {
   let emailStored = null
   let classSection = null
   let studentType = null
+  let department = String(req.body?.department || '').trim() || null
 
   if (role === 'student') {
     const studentIdRaw = String(req.body?.studentId ?? '').trim()
@@ -361,6 +377,8 @@ app.post('/api/auth/register', asyncHandler(async (req, res) => {
       studentType,
       studentIdStored,
       emailStored,
+      department,
+      affiliations: req.body?.affiliations || [],
       academicInfo: req.body?.academicInfo || {},
       personalInformation: req.body?.personalInformation || {},
       academicHistory: req.body?.academicHistory || [],
@@ -368,6 +386,17 @@ app.post('/api/auth/register', asyncHandler(async (req, res) => {
       violations: req.body?.violations || [],
       skills: req.body?.skills || [],
       affiliations: req.body?.affiliations || [],
+    })
+
+    const creatorId = req.user?.id || null
+    const creatorName = req.user?.full_name || req.user?.identifier || 'System'
+    await store.createLog({
+      type: 'CREATE',
+      action: 'Account Created',
+      details: `New ${role} account created: ${fullName || identifier}`,
+      userId: creatorId,
+      userName: creatorName,
+      userIp: req.ip
     })
   } catch (err) {
     return res.status(500).json({ error: err.message })
@@ -431,6 +460,16 @@ app.post('/api/auth/login', asyncHandler(async (req, res) => {
     createdAtIso: nowIso(),
     expiresAtIso: addHoursISO(SESSION_TTL_HOURS),
   })
+
+  await store.createLog({
+    type: 'ACCESS',
+    action: 'User Login',
+    details: `${user.full_name || user.identifier} logged in successfully`,
+    userId: user.id,
+    userName: user.full_name || user.identifier,
+    userIp: req.ip
+  })
+  console.log(`[AUTH] Login successful for ${user.identifier}`)
 
   return res.json({
     ok: true,
@@ -543,8 +582,8 @@ app.patch('/api/admin/users/:id', authMiddleware, authorize(PERMISSIONS.MANAGE_U
   if (!Number.isFinite(id)) return res.status(400).json({ error: 'Invalid id' })
   const target = await store.getAdminUserById(id)
   if (!target) return res.status(404).json({ error: 'User not found' })
-  if (target.role !== 'student') {
-    return res.status(400).json({ error: 'Only student accounts can be updated this way' })
+  if (target.role === 'admin' && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Only admins can update admin accounts' })
   }
   const updates = {}
   if (req.body.isActive !== undefined) {
@@ -600,6 +639,22 @@ app.patch('/api/admin/users/:id', authMiddleware, authorize(PERMISSIONS.MANAGE_U
     return res.status(400).json({ error: 'No valid updates provided' })
   }
   const user = await store.updateStudentProfile(id, updates)
+
+  // Log the update
+  const actingUser = req.user
+  let detailMsg = `Updated profile for ${user.full_name}`
+  if (req.body.isActive !== undefined) detailMsg = `${req.body.isActive ? 'Activated' : 'Deactivated'} account: ${user.full_name}`
+  if (req.body.role !== undefined) detailMsg = `Changed role for ${user.full_name} to ${req.body.role}`
+
+  await store.createLog({
+    type: 'UPDATE',
+    action: 'Profile Updated',
+    details: detailMsg,
+    userId: actingUser.id,
+    userName: actingUser.full_name || actingUser.identifier,
+    userIp: req.ip
+  })
+
   res.json({ ok: true, user })
 }))
 
@@ -616,6 +671,190 @@ app.get('/api/admin/students', authMiddleware, authorize(PERMISSIONS.MANAGE_USER
     students = users.filter(u => u.role === 'student')
   }
   res.json({ ok: true, students })
+}))
+
+app.get('/api/admin/logs', authMiddleware, authorize(PERMISSIONS.MANAGE_USERS), asyncHandler(async (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 100, 500)
+  const list = await store.listLogs(limit)
+  console.log(`[ADMIN] Fetched ${list.length} activity logs`)
+  res.json({ ok: true, logs: list })
+}))
+
+// --- Faculty Module API ---
+
+// Subjects
+app.get('/api/subjects', authMiddleware, asyncHandler(async (req, res) => {
+  const list = await store.listSubjects()
+  res.json({ ok: true, subjects: list })
+}))
+
+app.post('/api/subjects', authMiddleware, authorize(PERMISSIONS.MANAGE_USERS), asyncHandler(async (req, res) => {
+  const { code, name, description, units } = req.body
+  if (!code || !name) return res.status(400).json({ error: 'Code and Name are required' })
+  const sub = await store.createSubject({ code, name, description, units: Number(units) || 0 })
+  res.status(201).json({ ok: true, subject: sub })
+}))
+
+app.patch('/api/subjects/:id', authMiddleware, authorize(PERMISSIONS.MANAGE_USERS), asyncHandler(async (req, res) => {
+  const id = Number(req.params.id)
+  const sub = await store.updateSubject(id, req.body)
+  res.json({ ok: true, subject: sub })
+}))
+
+app.delete('/api/subjects/:id', authMiddleware, authorize(PERMISSIONS.MANAGE_USERS), asyncHandler(async (req, res) => {
+  const id = Number(req.params.id)
+  await store.deleteSubject(id)
+  res.json({ ok: true })
+}))
+
+// Teaching Loads
+app.get('/api/teaching-loads', authMiddleware, asyncHandler(async (req, res) => {
+  const facultyId = req.query.facultyId || (req.user.role === 'faculty' ? req.user.id : null)
+  const list = await store.listTeachingLoads(facultyId)
+  res.json({ ok: true, teachingLoads: list })
+}))
+
+app.post('/api/teaching-loads', authMiddleware, authorize(PERMISSIONS.MANAGE_USERS), asyncHandler(async (req, res) => {
+  const { facultyId, subjectId, sectionId, semester, academicYear } = req.body
+  if (!facultyId || !subjectId || !sectionId) return res.status(400).json({ error: 'Faculty, Subject, and Section are required' })
+  const load = await store.createTeachingLoad({
+    faculty_id: Number(facultyId),
+    subject_id: Number(subjectId),
+    section_id: sectionId,
+    semester,
+    academic_year: academicYear
+  })
+  res.status(201).json({ ok: true, teachingLoad: load })
+}))
+
+app.delete('/api/teaching-loads/:id', authMiddleware, authorize(PERMISSIONS.MANAGE_USERS), asyncHandler(async (req, res) => {
+  const id = Number(req.params.id)
+  await store.deleteTeachingLoad(id)
+  res.json({ ok: true })
+}))
+
+// Schedules
+app.get('/api/schedules', authMiddleware, asyncHandler(async (req, res) => {
+  const loadId = req.query.teachingLoadId
+  const list = await store.listSchedules(loadId)
+  res.json({ ok: true, schedules: list })
+}))
+
+app.post('/api/schedules', authMiddleware, authorize(PERMISSIONS.SCHEDULING_MANAGE), asyncHandler(async (req, res) => {
+  const { teachingLoadId, day, startTime, endTime, room } = req.body
+  if (!teachingLoadId || !day || !startTime || !endTime) return res.status(400).json({ error: 'Missing schedule details' })
+  
+  // Conflict detection
+  const overlaps = await store.findOverlappingSchedules(day, startTime, endTime, room)
+  if (overlaps.length > 0) {
+    return res.status(409).json({ error: 'Schedule conflict detected', overlaps })
+  }
+
+  const sch = await store.createSchedule({
+    teaching_load_id: Number(teachingLoadId),
+    day,
+    start_time: startTime,
+    end_time: endTime,
+    room
+  })
+  res.status(201).json({ ok: true, schedule: sch })
+}))
+
+app.delete('/api/schedules/:id', authMiddleware, authorize(PERMISSIONS.SCHEDULING_MANAGE), asyncHandler(async (req, res) => {
+  const id = Number(req.params.id)
+  await store.deleteSchedule(id)
+  res.json({ ok: true })
+}))
+
+// Documents
+app.get('/api/documents', authMiddleware, asyncHandler(async (req, res) => {
+  const { facultyId, subjectId, status } = req.query
+  const list = await store.listDocuments(facultyId, subjectId)
+  // Filter by status if provided
+  const filtered = status ? list.filter(d => d.status === status) : list
+  res.json({ ok: true, documents: filtered })
+}))
+
+app.post('/api/documents', authMiddleware, authorize(PERMISSIONS.DOC_CREATE), asyncHandler(async (req, res) => {
+  const { subjectId, title, fileUrl, fileType } = req.body
+  if (!subjectId || !title) return res.status(400).json({ error: 'Subject ID and title are required' })
+  
+  // Determine initial status based on role
+  let initialStatus = 'pending_faculty'
+  if (req.user.role === 'faculty' || req.user.role === 'secretary' || req.user.role === 'faculty_professor') {
+    initialStatus = 'pending_chair'
+  } else if (req.user.role === 'student') {
+    initialStatus = 'pending_faculty'
+  }
+
+  const doc = await store.createDocument({
+    faculty_id: req.user.role !== 'student' ? req.user.id : null,
+    student_id: req.user.role === 'student' ? req.user.id : null,
+    subject_id: Number(subjectId),
+    title,
+    file_url: fileUrl,
+    file_type: fileType,
+    status: initialStatus
+  })
+  res.status(201).json({ ok: true, document: doc })
+}))
+
+app.patch('/api/documents/:id/approval', authMiddleware, authorize(PERMISSIONS.DOC_APPROVE), asyncHandler(async (req, res) => {
+  const id = Number(req.params.id)
+  const { action, comments } = req.body // action: 'approve' or 'reject'
+  
+  if (!['approve', 'reject'].includes(action)) {
+    return res.status(400).json({ error: 'Invalid action' })
+  }
+
+  const doc = await store.findDocumentById(id)
+  if (!doc) return res.status(404).json({ error: 'Document not found' })
+
+  let nextStatus = 'rejected'
+  if (action === 'approve') {
+    if (req.user.role === 'faculty' || req.user.role === 'faculty_professor') {
+      nextStatus = 'pending_chair'
+    } else if (req.user.role === 'department_chair') {
+      nextStatus = 'pending_dean'
+    } else if (req.user.role === 'dean' || req.user.role === 'admin') {
+      nextStatus = 'approved'
+    }
+  }
+
+  const updated = await store.updateDocumentStatus(id, nextStatus, req.user.id, comments)
+  res.json({ ok: true, document: updated })
+}))
+
+app.delete('/api/documents/:id', authMiddleware, authorize(PERMISSIONS.DOC_DELETE), asyncHandler(async (req, res) => {
+  const id = Number(req.params.id)
+  await store.deleteDocument(id)
+  res.json({ ok: true })
+}))
+
+// Evaluations
+app.get('/api/evaluations', authMiddleware, asyncHandler(async (req, res) => {
+  const facultyId = req.query.facultyId || (req.user.role === 'faculty' ? req.user.id : null)
+  if (!facultyId) return res.status(400).json({ error: 'Faculty ID required' })
+  const list = await store.listEvaluations(facultyId)
+  res.json({ ok: true, evaluations: list })
+}))
+
+app.post('/api/evaluations', authMiddleware, asyncHandler(async (req, res) => {
+  const { facultyId, rating, feedback } = req.body
+  if (!facultyId || !rating) return res.status(400).json({ error: 'Faculty ID and rating are required' })
+  const ev = await store.createEvaluation({
+    faculty_id: Number(facultyId),
+    student_id: req.user.id,
+    rating: Number(rating),
+    feedback
+  })
+  res.status(201).json({ ok: true, evaluation: ev })
+}))
+
+// Faculty Profile update (specialized)
+app.patch('/api/faculty/profile', authMiddleware, authorize(PERMISSIONS.FACULTY_MY_PROFILE), asyncHandler(async (req, res) => {
+  const p = await store.updateFacultyProfile(req.user.id, req.body)
+  res.json({ ok: true, profile: p })
 }))
 
 app.use((err, req, res, _next) => {

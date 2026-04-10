@@ -67,6 +67,12 @@ export async function openMongoStore() {
   const loginAttempts = db.collection('login_attempts')
   const sessions = db.collection('sessions')
   const counters = db.collection('counters')
+  const subjects = db.collection('subjects')
+  const teachingLoads = db.collection('teaching_loads')
+  const schedules = db.collection('schedules')
+  const documents = db.collection('documents')
+  const evaluations = db.collection('evaluations')
+  const logs = db.collection('logs')
 
   // Ensure uniqueness constraints for user identity and sessions.
   await Promise.all([
@@ -83,23 +89,40 @@ export async function openMongoStore() {
     ),
     loginAttempts.createIndex({ identifier: 1 }, { unique: true, name: 'login_attempts_identifier_unique' }),
     sessions.createIndex({ token: 1 }, { unique: true, name: 'sessions_token_unique' }),
+    subjects.createIndex({ code: 1 }, { unique: true, name: 'subjects_code_unique' }),
+    subjects.createIndex({ id: 1 }, { unique: true, name: 'subjects_id_unique' }),
+    teachingLoads.createIndex({ id: 1 }, { unique: true, name: 'teaching_loads_id_unique' }),
+    teachingLoads.createIndex({ faculty_id: 1 }),
+    schedules.createIndex({ id: 1 }, { unique: true, name: 'schedules_id_unique' }),
+    schedules.createIndex({ teaching_load_id: 1 }),
+    documents.createIndex({ id: 1 }, { unique: true, name: 'documents_id_unique' }),
+    documents.createIndex({ faculty_id: 1, subject_id: 1 }),
+    evaluations.createIndex({ id: 1 }, { unique: true, name: 'evaluations_id_unique' }),
+    evaluations.createIndex({ faculty_id: 1 }),
+    logs.createIndex({ id: 1 }, { unique: true, name: 'logs_id_unique' }),
+    logs.createIndex({ created_at: -1 }),
   ])
 
-  async function nextUserId() {
-    const res = await counters.findOneAndUpdate(
-      { _id: 'users' },
-      { $inc: { seq: 1 } },
-      { upsert: true, returnDocument: 'after' },
-    )
-    // Support both res.value (old) and res (new) driver formats
-    const seq = res?.value?.seq ?? res?.seq
-    if (typeof seq === 'number') return seq
-    
-    // Fallback: search for the highest numeric ID, ignoring null or invalid values
-    const last = await users.find({ id: { $gt: 0 } }, { projection: { id: 1 } }).sort({ id: -1 }).limit(1).toArray()
-    const maxId = last.length > 0 ? (Number(last[0].id) || 0) : 0
-    return maxId + 1
-  }
+    async function nextId(collectionName) {
+      try {
+        const res = await counters.findOneAndUpdate(
+          { _id: collectionName },
+          { $inc: { seq: 1 } },
+          { upsert: true, returnDocument: 'after' },
+        )
+        const seq = res?.value?.seq ?? res?.seq
+        if (typeof seq === 'number') return seq
+        
+        console.warn(`[DB] Fallback ID generation for ${collectionName}`)
+        const collection = db.collection(collectionName)
+        const last = await collection.find({ id: { $gt: 0 } }, { projection: { id: 1 } }).sort({ id: -1 }).limit(1).toArray()
+        const maxId = last.length > 0 ? (Number(last[0].id) || 0) : 0
+        return maxId + 1
+      } catch (err) {
+        console.error(`[DB] nextId failure for ${collectionName}:`, err)
+        throw err
+      }
+    }
 
   return {
     async getLoginAttempt(identifier) {
@@ -214,12 +237,13 @@ export async function openMongoStore() {
       personalInformation,
       academicInfo,
       academicHistory,
-      nonAcademicActivities,
+      non_academic_activities,
       violations,
       skills,
       affiliations,
+      department,
     }) {
-      const id = await nextUserId()
+      const id = await nextId('users')
       const doc = {
         id,
         role,
@@ -234,6 +258,7 @@ export async function openMongoStore() {
         student_type: studentType,
         student_id: studentIdStored,
         email: emailStored,
+        department: department || null,
         is_active: 1,
         profile_image_url: null,
       }
@@ -243,7 +268,7 @@ export async function openMongoStore() {
         doc.personal_information = personalInformation || {}
         doc.academic_info = academicInfo || {}
         doc.academic_history = academicHistory || []
-        doc.non_academic_activities = nonAcademicActivities || []
+        doc.non_academic_activities = non_academic_activities || []
         doc.violations = violations || []
         doc.skills = skills || []
         doc.affiliations = affiliations || []
@@ -416,6 +441,7 @@ export async function openMongoStore() {
         'first_name',
         'middle_name',
         'last_name',
+        'department',
       ]
       const setUpdates = {}
       for (const field of allowedFields) {
@@ -583,6 +609,188 @@ export async function openMongoStore() {
         )
         .toArray()
     },
+
+    // Subjects
+    async listSubjects() {
+      return await subjects.find({}).sort({ code: 1 }).toArray()
+    },
+
+    async createSubject(data) {
+      const id = await nextId('subjects')
+      const doc = { id, ...data, created_at: new Date().toISOString() }
+      await subjects.insertOne(doc)
+      return doc
+    },
+
+    async updateSubject(id, updates) {
+      await subjects.updateOne({ id: Number(id) }, { $set: updates })
+      return await subjects.findOne({ id: Number(id) })
+    },
+
+    async deleteSubject(id) {
+      await subjects.deleteOne({ id: Number(id) })
+    },
+
+    // Teaching Loads
+    async listTeachingLoads(facultyId = null) {
+      const query = facultyId ? { faculty_id: Number(facultyId) } : {}
+      return await teachingLoads.find(query).toArray()
+    },
+
+    async createTeachingLoad(data) {
+      const id = await nextId('teaching_loads')
+      const doc = { id, ...data, created_at: new Date().toISOString() }
+      await teachingLoads.insertOne(doc)
+      return doc
+    },
+
+    async deleteTeachingLoad(id) {
+      await teachingLoads.deleteOne({ id: Number(id) })
+      // Also delete associated schedules
+      await schedules.deleteMany({ teaching_load_id: Number(id) })
+    },
+
+    // Schedules
+    async listSchedules(teachingLoadId = null) {
+      const query = teachingLoadId ? { teaching_load_id: Number(teachingLoadId) } : {}
+      return await schedules.find(query).toArray()
+    },
+
+    async createSchedule(data) {
+      const id = await nextId('schedules')
+      const doc = { id, ...data, created_at: new Date().toISOString() }
+      await schedules.insertOne(doc)
+      return doc
+    },
+
+    async deleteSchedule(id) {
+      await schedules.deleteOne({ id: Number(id) })
+    },
+
+    async findOverlappingSchedules(day, startTime, endTime, room) {
+      // Very simple overlap check: (StartA < EndB) and (EndA > StartB)
+      return await schedules.find({
+        day,
+        room,
+        $or: [
+          {
+            $and: [
+              { start_time: { $lt: endTime } },
+              { end_time: { $gt: startTime } }
+            ]
+          }
+        ]
+      }).toArray()
+    },
+
+    // Documents
+    async listDocuments(facultyId = null, subjectId = null) {
+      const query = {}
+      if (facultyId) query.faculty_id = Number(facultyId)
+      if (subjectId) query.subject_id = Number(subjectId)
+      return await documents.find(query).sort({ created_at: -1 }).toArray()
+    },
+
+    async findDocumentById(id) {
+      return await documents.findOne({ id: Number(id) })
+    },
+
+    async createDocument(data) {
+      const id = await nextId('documents')
+      const doc = { 
+        id, 
+        ...data, 
+        status: data.status || 'pending_faculty',
+        created_at: new Date().toISOString(),
+        history: [{ date: new Date().toISOString(), action: 'submitted', by: data.faculty_id || data.student_id }]
+      }
+      await documents.insertOne(doc)
+      return doc
+    },
+
+    async updateDocumentStatus(id, status, reviewerId, comments = null) {
+      await documents.updateOne(
+        { id: Number(id) },
+        { 
+          $set: { status },
+          $push: { 
+            history: { 
+              date: new Date().toISOString(), 
+              action: status, 
+              by: reviewerId,
+              comments
+            } 
+          }
+        }
+      )
+      return await documents.findOne({ id: Number(id) })
+    },
+
+    async deleteDocument(id) {
+      await documents.deleteOne({ id: Number(id) })
+    },
+
+    // Evaluations
+    async listEvaluations(facultyId) {
+      return await evaluations.find({ faculty_id: Number(facultyId) }).sort({ created_at: -1 }).toArray()
+    },
+
+    async createEvaluation(data) {
+      const id = await nextId('evaluations')
+      const doc = { id, ...data, created_at: new Date().toISOString() }
+      await evaluations.insertOne(doc)
+      return doc
+    },
+
+    // Faculty specific user updates
+    async updateFacultyProfile(userId, updates) {
+      const allowedFields = [
+        'specialization',
+        'department_role',
+        'consultation_hours',
+        'full_name',
+        'email',
+        'profile_image_url'
+      ]
+      const setUpdates = {}
+      for (const field of allowedFields) {
+        if (updates[field] !== undefined) {
+          setUpdates[field] = updates[field]
+        }
+      }
+      if (Object.keys(setUpdates).length > 0) {
+        const idQuery = { $or: [{ id: Number(userId) }, { id: String(userId) }] }
+        await users.updateOne(idQuery, { $set: setUpdates })
+      }
+      return await this.getAccountProfile(userId)
+    },
+
+    // Logs
+    async listLogs(limit = 100) {
+      return await logs.find({}).sort({ created_at: -1 }).limit(limit).toArray()
+    },
+
+    async createLog({ type, action, details, userId, userName, userIp }) {
+      try {
+        const id = await nextId('logs')
+        const doc = {
+          id,
+          type, // ACCESS, CREATE, UPDATE, DELETE
+          action,
+          details,
+          user_id: userId,
+          user_name: userName || null,
+          user_ip: userIp || null,
+          created_at: new Date().toISOString(),
+        }
+        await logs.insertOne(doc)
+        console.log(`[LOG CREATED] ${action} (${type}) for User ${userName || userId}`)
+        return doc
+      } catch (err) {
+        console.error(`[LOG ERROR] Failed to create log ${action}:`, err)
+        return null
+      }
+    }
 
   }
 }

@@ -48,7 +48,7 @@ loadEnvFile()
 
 const DEFAULT_PORT = Number(process.env.PORT || 5000)
 const MAX_PORT_PROBES = 20
-const PER_PORT_STARTUP_TIMEOUT_MS = 5000
+const PER_PORT_STARTUP_TIMEOUT_MS = 30000
 
 let serverProcess = null
 let viteProcess = null
@@ -135,6 +135,8 @@ async function waitForBackendReady(child, port, timeoutMs) {
     exited = code ?? 0
   }
   child.once('exit', onExit)
+  // eslint-disable-next-line no-console
+  console.log(`Waiting for backend to become healthy at ${healthUrlForPort(port)}...`)
   while (Date.now() - start < timeoutMs) {
     if (exited !== null) {
       child.removeListener('exit', onExit)

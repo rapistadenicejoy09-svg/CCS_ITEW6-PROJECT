@@ -74,6 +74,7 @@ function useTodayParts() {
 
 export default function Dashboard() {
   const [role, setRole] = useState(() => getRole())
+  if (role === 'faculty') return <Navigate to="/faculty-dashboard" replace />
   const [modules, setModules] = useState(MODULES)
   const [search, setSearch] = useState('')
   const query = search.toLowerCase()

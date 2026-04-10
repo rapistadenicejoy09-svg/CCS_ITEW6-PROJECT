@@ -216,6 +216,40 @@ export async function apiAdminStudents(token, query = {}) {
   })
 }
 
+export async function apiGetDocuments(token, query = {}) {
+  const params = new URLSearchParams()
+  if (query.facultyId) params.set('facultyId', query.facultyId)
+  if (query.subjectId) params.set('subjectId', query.subjectId)
+  if (query.status) params.set('status', query.status)
+  return request(`/api/documents?${params.toString()}`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+}
+
+export async function apiUploadDocument(token, body) {
+  return request('/api/documents', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  })
+}
+
+export async function apiApproveDocument(token, id, body) {
+  return request(`/api/documents/${id}/approval`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  })
+}
+
+export async function apiGetReports(token) {
+  return request('/api/reports', {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+}
+
 export async function apiGetAccountProfile(token) {
   return request('/api/account/profile', {
     method: 'GET',
@@ -254,3 +288,119 @@ export async function api2faVerify(token, code) {
   })
 }
 
+// --- Faculty Module API ---
+
+export async function apiGetSubjects(token) {
+  return request('/api/subjects', {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+}
+
+export async function apiCreateSubject(token, body) {
+  return request('/api/subjects', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  })
+}
+
+export async function apiUpdateSubject(token, id, body) {
+  return request(`/api/subjects/${id}`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  })
+}
+
+export async function apiDeleteSubject(token, id) {
+  return request(`/api/subjects/${id}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+}
+
+export async function apiGetTeachingLoads(token, facultyId = null) {
+  const url = `/api/teaching-loads${facultyId ? '?facultyId=' + facultyId : ''}`
+  return request(url, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+}
+
+export async function apiCreateTeachingLoad(token, body) {
+  return request('/api/teaching-loads', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  })
+}
+
+export async function apiDeleteTeachingLoad(token, id) {
+  return request(`/api/teaching-loads/${id}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+}
+
+export async function apiGetSchedules(token, teachingLoadId = null) {
+  const url = `/api/schedules${teachingLoadId ? '?teachingLoadId=' + teachingLoadId : ''}`
+  return request(url, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+}
+
+export async function apiCreateSchedule(token, body) {
+  return request('/api/schedules', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  })
+}
+
+export async function apiDeleteSchedule(token, id) {
+  return request(`/api/schedules/${id}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+}
+
+
+export async function apiDeleteDocument(token, id) {
+  return request(`/api/documents/${id}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+}
+
+export async function apiGetEvaluations(token, facultyId = null) {
+  const url = `/api/evaluations${facultyId ? '?facultyId=' + facultyId : ''}`
+  return request(url, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+}
+
+export async function apiCreateEvaluation(token, body) {
+  return request('/api/evaluations', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  })
+}
+
+export async function apiUpdateFacultyProfile(token, body) {
+  return request('/api/faculty/profile', {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  })
+}
+
+export async function apiAdminLogs(token, limit = 100) {
+  return request(`/api/admin/logs?limit=${limit}`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+}

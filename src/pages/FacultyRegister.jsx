@@ -8,6 +8,8 @@ export default function FacultyRegister() {
     email: '',
     password: '',
     confirmPassword: '',
+    role: 'faculty_professor',
+    department: '',
   })
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -47,9 +49,10 @@ export default function FacultyRegister() {
 
     try {
       await apiRegister({
-        role: 'faculty',
+        role: form.role,
         identifier: form.email,
         password: form.password,
+        department: form.department,
       })
       navigate('/faculty/login')
     } catch {
@@ -68,6 +71,40 @@ export default function FacultyRegister() {
         </p>
 
         <form className="auth-form" onSubmit={handleSubmit}>
+          <label className="auth-field">
+            <span className="auth-label">Academic Role</span>
+            <select
+              className="auth-input"
+              name="role"
+              value={form.role}
+              onChange={handleChange}
+            >
+              <option value="faculty_professor">Faculty Professor</option>
+              <option value="dean">Dean</option>
+              <option value="department_chair">Department Chair</option>
+              <option value="secretary">Secretary</option>
+              <option value="faculty">Faculty (Legacy)</option>
+            </select>
+          </label>
+
+          <label className="auth-field">
+            <span className="auth-label">Department</span>
+            <select
+              className="auth-input"
+              name="department"
+              value={form.department}
+              onChange={handleChange}
+              required
+            >
+              <option value="">Select Department</option>
+              <option value="Information Technology">Information Technology</option>
+              <option value="Computer Science">Computer Science</option>
+              <option value="Engineering">Engineering</option>
+              <option value="Business Administration">Business Administration</option>
+              <option value="Education">Education</option>
+            </select>
+          </label>
+
           <label className="auth-field">
             <span className="auth-label">Faculty Email</span>
             <input

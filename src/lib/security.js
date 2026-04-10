@@ -7,6 +7,10 @@ export const ROLES = {
   ADMIN: 'admin',
   STUDENT: 'student',
   FACULTY: 'faculty',
+  DEAN: 'dean',
+  DEPARTMENT_CHAIR: 'department_chair',
+  SECRETARY: 'secretary',
+  FACULTY_PROFESSOR: 'faculty_professor',
 }
 
 /** Permissions define what actions/features a role can access */
@@ -26,6 +30,15 @@ export const PERMISSIONS = {
   INSTRUCTIONS_MANAGE: 'instructions:manage',
   CREATE_ADMIN_ACCOUNT: 'admin:create_account',
   MANAGE_USERS: 'users:manage',
+
+  // Document Management System (NEW)
+  DOC_CREATE: 'doc:create',
+  DOC_READ_OWN: 'doc:read_own',
+  DOC_UPDATE_OWN: 'doc:update_own',
+  DOC_APPROVE: 'doc:approve',
+  DOC_DELETE: 'doc:delete',
+  VIEW_REPORTS: 'reports:view',
+  MANAGE_DEPARTMENT: 'dept:manage',
 }
 
 /** Role → Permissions mapping */
@@ -46,29 +59,65 @@ const ROLE_PERMISSIONS = {
     PERMISSIONS.INSTRUCTIONS_MANAGE,
     PERMISSIONS.CREATE_ADMIN_ACCOUNT,
     PERMISSIONS.MANAGE_USERS,
+    PERMISSIONS.DOC_CREATE,
+    PERMISSIONS.DOC_APPROVE,
+    PERMISSIONS.DOC_DELETE,
+    PERMISSIONS.VIEW_REPORTS,
+    PERMISSIONS.MANAGE_DEPARTMENT,
   ],
   [ROLES.STUDENT]: [
     PERMISSIONS.DASHBOARD_VIEW,
     PERMISSIONS.STUDENT_PROFILE,
-    PERMISSIONS.FACULTY_PROFILE,
-    PERMISSIONS.EVENTS_VIEW,
-    PERMISSIONS.SCHEDULING_VIEW,
-    PERMISSIONS.COLLEGE_RESEARCH_VIEW,
+    PERMISSIONS.DOC_CREATE,
+    PERMISSIONS.DOC_READ_OWN,
+    PERMISSIONS.DOC_UPDATE_OWN,
     PERMISSIONS.INSTRUCTIONS_VIEW,
   ],
   [ROLES.FACULTY]: [
     PERMISSIONS.DASHBOARD_VIEW,
     PERMISSIONS.FACULTY_MY_PROFILE,
+    PERMISSIONS.DOC_CREATE,
+    PERMISSIONS.DOC_READ_OWN,
+    PERMISSIONS.DOC_UPDATE_OWN,
+    PERMISSIONS.DOC_APPROVE,
+  ],
+  [ROLES.DEAN]: [
+    PERMISSIONS.DASHBOARD_VIEW,
+    PERMISSIONS.FACULTY_MY_PROFILE,
     PERMISSIONS.FACULTY_PROFILE,
     PERMISSIONS.STUDENT_PROFILE,
-    PERMISSIONS.EVENTS_VIEW,
-    PERMISSIONS.EVENTS_MANAGE,
-    PERMISSIONS.SCHEDULING_VIEW,
-    PERMISSIONS.SCHEDULING_MANAGE,
-    PERMISSIONS.COLLEGE_RESEARCH_VIEW,
-    PERMISSIONS.COLLEGE_RESEARCH_MANAGE,
-    PERMISSIONS.INSTRUCTIONS_VIEW,
-    PERMISSIONS.INSTRUCTIONS_MANAGE,
+    PERMISSIONS.MANAGE_USERS,
+    PERMISSIONS.DOC_READ_OWN,
+    PERMISSIONS.DOC_APPROVE,
+    PERMISSIONS.VIEW_REPORTS,
+    PERMISSIONS.MANAGE_DEPARTMENT,
+  ],
+  [ROLES.DEPARTMENT_CHAIR]: [
+    PERMISSIONS.DASHBOARD_VIEW,
+    PERMISSIONS.FACULTY_MY_PROFILE,
+    PERMISSIONS.FACULTY_PROFILE,
+    PERMISSIONS.STUDENT_PROFILE,
+    PERMISSIONS.DOC_READ_OWN,
+    PERMISSIONS.DOC_APPROVE,
+    PERMISSIONS.VIEW_REPORTS,
+    PERMISSIONS.MANAGE_DEPARTMENT,
+  ],
+  [ROLES.SECRETARY]: [
+    PERMISSIONS.DASHBOARD_VIEW,
+    PERMISSIONS.FACULTY_MY_PROFILE,
+    PERMISSIONS.STUDENT_PROFILE,
+    PERMISSIONS.DOC_CREATE,
+    PERMISSIONS.DOC_READ_OWN,
+    PERMISSIONS.DOC_UPDATE_OWN,
+    PERMISSIONS.MANAGE_DEPARTMENT,
+  ],
+  [ROLES.FACULTY_PROFESSOR]: [
+    PERMISSIONS.DASHBOARD_VIEW,
+    PERMISSIONS.FACULTY_MY_PROFILE,
+    PERMISSIONS.DOC_CREATE,
+    PERMISSIONS.DOC_READ_OWN,
+    PERMISSIONS.DOC_UPDATE_OWN,
+    PERMISSIONS.DOC_APPROVE,
   ],
 }
 
@@ -79,10 +128,18 @@ export const PATH_PERMISSIONS = {
   '/student-profile': PERMISSIONS.STUDENT_PROFILE,
   '/faculty-my-profile': PERMISSIONS.FACULTY_MY_PROFILE,
   '/faculty-profile': PERMISSIONS.FACULTY_PROFILE,
+  '/faculty/teaching-load': PERMISSIONS.FACULTY_PROFILE,
+  '/faculty/schedule': PERMISSIONS.SCHEDULING_VIEW,
+  '/faculty/documents': PERMISSIONS.DOC_READ_OWN,
+  '/faculty/evaluations': PERMISSIONS.DOC_READ_OWN,
+  '/faculty/consultation': PERMISSIONS.FACULTY_MY_PROFILE,
+  '/faculty/subjects': PERMISSIONS.FACULTY_PROFILE,
   '/events': PERMISSIONS.EVENTS_VIEW,
   '/scheduling': PERMISSIONS.SCHEDULING_VIEW,
   '/college-research': PERMISSIONS.COLLEGE_RESEARCH_VIEW,
   '/instructions': PERMISSIONS.INSTRUCTIONS_VIEW,
+  '/admin/users': PERMISSIONS.MANAGE_USERS,
+  '/admin/reports': PERMISSIONS.VIEW_REPORTS,
 }
 
 /**
@@ -93,9 +150,12 @@ export function getCurrentRole() {
     const raw = localStorage.getItem('authUser')
     if (!raw) return null
     const user = JSON.parse(raw)
-    if (user?.role === ROLES.ADMIN) return ROLES.ADMIN
-    if (user?.role === ROLES.STUDENT) return ROLES.STUDENT
-    if (user?.role === ROLES.FACULTY) return ROLES.FACULTY
+    const roleValue = user?.role
+    if (!roleValue) return null
+    
+    // Check if the role value exists in our ROLES object
+    const match = Object.values(ROLES).find(r => r === roleValue)
+    return match || null
   } catch {
     // ignore
   }
@@ -116,7 +176,7 @@ export function hasPermission(permission) {
  * Check if the current role can access a path
  */
 export function canAccessPath(path) {
-  if (path === '/admin/create-student' || path.startsWith('/admin/student/')) {
+  if (path === '/admin/create-student' || path.startsWith('/admin/student/') || path === '/admin/users') {
     return hasPermission(PERMISSIONS.MANAGE_USERS)
   }
   const perm = PATH_PERMISSIONS[path]
