@@ -2,6 +2,10 @@ import express from 'express'
 import cors from 'cors'
 import helmet from 'helmet'
 import rateLimit from 'express-rate-limit'
+import multer from 'multer'
+import fs from 'fs'
+import path from 'path'
+import { fileURLToPath } from 'url'
 
 import { openStore } from './store.js'
 import {
@@ -13,7 +17,32 @@ import {
 } from './auth.js'
 import speakeasy from 'speakeasy'
 import qrcode from 'qrcode'
-import { authorize, PERMISSIONS } from './security.js'
+import { authorize, PERMISSIONS, ROLES, requireRole, hasPermission } from './security.js'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const researchUploadDir = path.join(__dirname, 'uploads', 'research')
+fs.mkdirSync(researchUploadDir, { recursive: true })
+
+const researchUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, researchUploadDir),
+    filename: (_req, file, cb) => {
+      const ext = path.extname(file.originalname || '').toLowerCase()
+      const safe = ext === '.pdf' ? ext : '.pdf'
+      cb(null, `r-${Date.now()}-${Math.random().toString(36).slice(2, 10)}${safe}`)
+    },
+  }),
+  limits: { fileSize: 25 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const ok =
+      file.mimetype === 'application/pdf' ||
+      String(file.originalname || '')
+        .toLowerCase()
+        .endsWith('.pdf')
+    if (!ok) return cb(new Error('Only PDF files are allowed'))
+    cb(null, true)
+  },
+})
 
 const PORT = Number(process.env.PORT || 5000)
 const SESSION_TTL_HOURS = 24
@@ -24,6 +53,28 @@ const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res, ne
 let store
 try {
   store = await openStore()
+  if (typeof store.backfillPublishedRepositoryRefs === 'function') {
+    try {
+      const n = await store.backfillPublishedRepositoryRefs()
+      if (n > 0) {
+        // eslint-disable-next-line no-console
+        console.log(`[Research] Assigned repository reference number(s) to ${n} published record(s).`)
+      }
+      const m = await store.backfillSubmissionRefs()
+      if (m > 0) {
+        // eslint-disable-next-line no-console
+        console.log(`[Research] Assigned submission reference number(s) to ${m} record(s).`)
+      }
+      
+      const missingStaff = await store.fixMissingFacultyInformation()
+      if (missingStaff > 0) {
+        console.log(`[Admin] Reconstructed personal records for ${missingStaff} faculty/admin staff.`)
+      }
+    } catch (bfErr) {
+      // eslint-disable-next-line no-console
+      console.warn('[Research] Repository ref backfill:', bfErr?.message || bfErr)
+    }
+  }
 } catch (err) {
   // eslint-disable-next-line no-console
   console.error('Failed to open datastore:', err)
@@ -234,21 +285,27 @@ function studentAccountProfileForResponse(p) {
   }
 }
 
-function adminFacultyAccountProfileForResponse(p) {
-  const loginEmail = String(p.email || p.identifier || '').trim()
+/** DB user / profile row: snake_case + personal_information (same shape as getAccountProfile / getUserByIdForAuth). */
+function nonStudentNameFieldsFromDbUser(p) {
   const pi = p.personal_information || {}
   const full = String(p.full_name || '').trim()
   const parts = full ? full.split(/\s+/).filter(Boolean) : []
   const firstName = String(p.first_name || pi.first_name || parts[0] || '').trim()
   const lastName = String(p.last_name || pi.last_name || parts[parts.length - 1] || '').trim()
   const middleName = String(
-    p.middle_name ||
-    pi.middle_name ||
-    (parts.length > 2 ? parts.slice(1, -1).join(' ') : ''),
+    p.middle_name || pi.middle_name || (parts.length > 2 ? parts.slice(1, -1).join(' ') : ''),
   ).trim()
+  return { firstName, middleName, lastName }
+}
+
+function adminFacultyAccountProfileForResponse(p) {
+  const loginEmail = String(p.email || p.identifier || '').trim()
+  const full = String(p.full_name || '').trim()
+  const { firstName, middleName, lastName } = nonStudentNameFieldsFromDbUser(p)
   const displayName = [firstName, middleName, lastName].filter(Boolean).join(' ') || full || loginEmail
   return {
     role: p.role,
+    id: p.id,
     identifier: p.identifier || '',
     fullName: p.full_name || '',
     displayName,
@@ -258,6 +315,10 @@ function adminFacultyAccountProfileForResponse(p) {
     email: loginEmail,
     profileImageUrl: p.profile_image_url || null,
     twofaEnabled: !!p.twofa_enabled,
+    department: p.department || null,
+    specialization: p.specialization || null,
+    personal_information: p.personal_information || {},
+    bio: p.bio || null,
   }
 }
 
@@ -271,6 +332,7 @@ function publicAuthUser(user) {
     })
     const displayName = studentDisplayNameFromPi(pi, user.full_name)
     return {
+      id: user.id,
       role: user.role,
       identifier: user.identifier,
       studentId: user.student_id || user.identifier,
@@ -284,13 +346,141 @@ function publicAuthUser(user) {
       mustChangePassword: studentMustChangePassword(user),
     }
   }
+  const { firstName, middleName, lastName } = nonStudentNameFieldsFromDbUser(user)
+  const mi = middleName ? `${middleName.charAt(0).toUpperCase()}.` : ''
+  const headerLabel = [firstName, mi, lastName].filter(Boolean).join(' ') || user.full_name || user.identifier || ''
   return {
+    id: user.id,
     role: user.role,
     identifier: user.identifier,
     fullName: user.full_name || '',
-    displayName: user.full_name || user.identifier || '',
+    displayName: headerLabel,
+    firstName,
+    middleName,
+    lastName,
     profileImageUrl: user.profile_image_url || null,
   }
+}
+
+function userNumId(u) {
+  const n = Number(u?.id)
+  return Number.isFinite(n) ? n : null
+}
+
+function researchCreatorLabel(u) {
+  if (!u) return ''
+  if (u.role === 'student') {
+    const pi = normalizedStudentNameParts(u.personal_information, u.full_name, {
+      first_name: u.first_name,
+      middle_name: u.middle_name,
+      last_name: u.last_name,
+    })
+    return studentDisplayNameFromPi(pi, u.full_name)
+  }
+  return String(u.full_name || u.identifier || '').trim() || `User ${u.id}`
+}
+
+function researchForClient(item) {
+  if (!item) return null
+  const { file_stored_name: _fs, ...rest } = item
+  return { ...rest, has_pdf: Boolean(item.file_stored_name) }
+}
+
+/** Published works get a unique CCS-CR-{year}-{seq} once; fills legacy rows missing a ref on any save. */
+async function assignRepositoryRefIfPublishing(store, existingItem, patch) {
+  const nextStatus = patch.status !== undefined ? patch.status : existingItem.status
+  const patchOut = { ...patch }
+  const needsRef =
+    nextStatus === 'published' && !existingItem.repository_ref && !patch.repository_ref
+  if (!needsRef) return patch
+  let at = patchOut.published_at || existingItem.published_at
+  if (!at) {
+    at = new Date().toISOString()
+    if (!existingItem.published_at && !patch.published_at) {
+      patchOut.published_at = at
+    }
+  }
+  const y = new Date(at).getFullYear()
+  patchOut.repository_ref = await store.nextResearchRepositoryRef(y)
+  return patchOut
+}
+
+function canViewResearchItem(user, item) {
+  if (!item || !user) return false
+  if (!hasPermission(user.role, PERMISSIONS.COLLEGE_RESEARCH_VIEW)) return false
+  if (['admin', 'dean', 'department_chair'].includes(user.role)) return true
+  if (user.role === 'secretary') return true
+  if (item.status === 'published') return true
+  const uid = userNumId(user)
+  if (item.created_by_user_id === uid) return true
+  if (item.adviser_faculty_id != null && Number(item.adviser_faculty_id) === uid) return true
+  const co = Array.isArray(item.co_author_user_ids) ? item.co_author_user_ids.map(Number) : []
+  if (uid != null && co.includes(uid)) return true
+  return false
+}
+
+function canEditResearchItem(user, item) {
+  if (!item || !user) return false
+  if (user.role === 'admin' || user.role === 'secretary') return true
+  const uid = userNumId(user)
+  if (item.created_by_user_id !== uid) return false
+  return ['draft', 'rejected'].includes(item.status)
+}
+
+function deleteResearchStoredFile(storedName) {
+  if (!storedName || typeof storedName !== 'string') return
+  const base = path.basename(storedName)
+  if (base !== storedName || !base.startsWith('r-')) return
+  const fp = path.join(researchUploadDir, base)
+  try {
+    fs.unlinkSync(fp)
+  } catch {
+    // ignore
+  }
+}
+
+function resolveNewResearchStatus(body, user) {
+  const want = String(body?.status || 'draft').toLowerCase()
+  if (want === 'draft') return 'draft'
+  if (user.role === 'admin') {
+    const direct = String(body?.publishDirect || '').toLowerCase()
+    if (direct === 'true' || direct === '1') return 'published'
+    return 'pending_approval'
+  }
+  if (user.role === 'secretary') {
+    const needApproval = String(body?.requireApproval || '').toLowerCase()
+    if (needApproval === 'true' || needApproval === '1') return 'pending_approval'
+    return 'published'
+  }
+  if (user.role === 'student') return 'under_faculty_review'
+  if (['faculty', 'faculty_professor', 'dean', 'department_chair'].includes(user.role)) {
+    return 'pending_approval'
+  }
+  return 'draft'
+}
+
+async function buildResearchAuthors(store, creatorUser, coAuthorIds) {
+  const raw = Array.isArray(coAuthorIds) ? coAuthorIds : []
+  const ids = [...new Set(raw.map((x) => Number(x)).filter((n) => Number.isFinite(n)))]
+  const creatorId = userNumId(creatorUser)
+  const authors = [
+    {
+      display_name: researchCreatorLabel(creatorUser),
+      user_id: creatorId,
+      user_role: creatorUser.role,
+    },
+  ]
+  for (const id of ids) {
+    if (id === creatorId) continue
+    const row = await store.getUserByIdForAuth(id)
+    if (!row) continue
+    authors.push({
+      display_name: researchCreatorLabel(row),
+      user_id: userNumId(row),
+      user_role: row.role,
+    })
+  }
+  return { authors, co_author_user_ids: authors.map((a) => a.user_id).filter((x) => x != null) }
 }
 
 const authMiddleware = asyncHandler(async (req, res, next) => {
@@ -318,15 +508,37 @@ app.get('/api/health', (req, res) => {
   res.json({ ok: true })
 })
 
-app.post('/api/auth/register', asyncHandler(async (req, res) => {
-  const role = String(req.body?.role || '').trim()
+const REGISTER_ROLES_PUBLIC = [
+  'student',
+  'faculty',
+  'dean',
+  'department_chair',
+  'secretary',
+  'faculty_professor',
+]
+
+async function registerUserFromRequest(req, res, { role: roleFixed } = {}) {
+  const role = roleFixed ?? String(req.body?.role || '').trim()
   const password = String(req.body?.password || '')
   let fullName = String(req.body?.fullName || '').trim() || null
   const enable2FA = Boolean(req.body?.enable2FA)
 
-  if (!['admin', 'student', 'faculty', 'dean', 'department_chair', 'secretary', 'faculty_professor'].includes(role)) {
+  const allowedRoles = roleFixed
+    ? [roleFixed]
+    : [...REGISTER_ROLES_PUBLIC, 'admin']
+  if (!allowedRoles.includes(role)) {
     return res.status(400).json({ error: 'Invalid role' })
   }
+
+  if (role === 'admin' && !roleFixed) {
+    const adminCount = await store.countUsersByRole('admin')
+    if (adminCount > 0) {
+      return res.status(403).json({
+        error: 'Admin accounts can only be created by an existing administrator.',
+      })
+    }
+  }
+
   if (!password || password.length < 8) {
     return res.status(400).json({ error: 'Password must be at least 8 characters' })
   }
@@ -376,6 +588,12 @@ app.post('/api/auth/register', asyncHandler(async (req, res) => {
     if (identifier.includes('@')) {
       emailStored = identifier
     }
+    const piRaw = req.body?.personalInformation || req.body?.personal_information || {}
+    const nameFn = String(piRaw.first_name || piRaw.firstName || '').trim()
+    const nameMn = String(piRaw.middle_name || piRaw.middleName || '').trim()
+    const nameLn = String(piRaw.last_name || piRaw.lastName || '').trim()
+    const composedFromPi = [nameFn, nameMn, nameLn].filter(Boolean).join(' ')
+    if (composedFromPi) fullName = composedFromPi
   }
 
   const passwordHash = hashPassword(password)
@@ -407,22 +625,59 @@ app.post('/api/auth/register', asyncHandler(async (req, res) => {
       affiliations: req.body?.affiliations || [],
     })
 
-    const creatorId = req.user?.id || null
+    const creatorId = req.user?.id ?? null
     const creatorName = req.user?.full_name || req.user?.identifier || 'System'
-    await store.createLog({
-      type: 'CREATE',
-      action: 'Account Created',
-      details: `New ${role} account created: ${fullName || identifier}`,
-      userId: creatorId,
-      userName: creatorName,
-      userIp: req.ip
-    })
+    const isAdminProvisionedByAdmin = role === 'admin' && creatorId != null
+
+    if (isAdminProvisionedByAdmin) {
+      await store.createLog({
+        type: 'SECURITY',
+        action: 'Admin Account Created',
+        details: `New administrator "${fullName || identifier}" (login: ${identifier}) was created by ${creatorName} (admin user ID ${creatorId}).`,
+        userId: creatorId,
+        userName: creatorName,
+        userIp: req.ip,
+      })
+    } else if (role === 'admin') {
+      await store.createLog({
+        type: 'SECURITY',
+        action: 'Admin Account Created',
+        details: `Initial administrator "${fullName || identifier}" (login: ${identifier}) — first-time bootstrap (no prior admin users).`,
+        userId: null,
+        userName: 'System',
+        userIp: req.ip,
+      })
+    } else {
+      await store.createLog({
+        type: 'CREATE',
+        action: 'Account Created',
+        details: `New ${role} account created: ${fullName || identifier}`,
+        userId: creatorId,
+        userName: creatorName,
+        userIp: req.ip,
+      })
+    }
   } catch (err) {
     return res.status(500).json({ error: err.message })
   }
 
   return res.status(201).json({ ok: true, twoFABackupCode: backupCode })
+}
+
+app.post('/api/auth/register', asyncHandler(async (req, res) => {
+  return registerUserFromRequest(req, res)
 }))
+
+/** Admin-only: create additional administrator accounts (authenticated). */
+app.post(
+  '/api/admin/accounts',
+  authMiddleware,
+  requireRole(ROLES.ADMIN),
+  asyncHandler(async (req, res) => {
+    req.body = { ...req.body, role: 'admin' }
+    return registerUserFromRequest(req, res, { role: 'admin' })
+  }),
+)
 
 app.post('/api/auth/login', asyncHandler(async (req, res) => {
   const identifier = normalizeIdentifier(req.body?.identifier)
@@ -519,6 +774,10 @@ app.patch('/api/account/profile', authMiddleware, asyncHandler(async (req, res) 
   const body = {}
   if (req.body.profileImageUrl !== undefined) body.profileImageUrl = req.body.profileImageUrl
   if (req.body.fullName !== undefined) body.fullName = req.body.fullName
+  if (req.body.personalInformation !== undefined) body.personalInformation = req.body.personalInformation
+  if (req.body.bio !== undefined) body.bio = req.body.bio
+  if (req.body.department !== undefined) body.department = req.body.department
+  if (req.body.specialization !== undefined) body.specialization = req.body.specialization
   if (Object.keys(body).length === 0) {
     return res.status(400).json({ error: 'No updates provided' })
   }
@@ -712,6 +971,12 @@ app.get('/api/admin/logs', authMiddleware, authorize(PERMISSIONS.MANAGE_USERS), 
   res.json({ ok: true, logs: list })
 }))
 
+app.get('/api/me/logs', authMiddleware, asyncHandler(async (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 100, 500)
+  const list = await store.listUserLogs(limit, req.user.id)
+  res.json({ ok: true, logs: list })
+}))
+
 // --- Faculty Module API ---
 
 // Subjects
@@ -862,6 +1127,459 @@ app.delete('/api/documents/:id', authMiddleware, authorize(PERMISSIONS.DOC_DELET
   await store.deleteDocument(id)
   res.json({ ok: true })
 }))
+
+async function handleResearchList(req, res) {
+  const scope = String(req.query.scope || 'repository').toLowerCase()
+  const year = req.query.year ? Number(req.query.year) : null
+  const course = String(req.query.course || '').trim()
+  const keyword = String(req.query.keyword || '').trim()
+  const author = String(req.query.author || '').trim()
+  const statusFilter = String(req.query.status || '').trim()
+
+  let filter = {}
+  if (scope === 'repository') {
+    filter.status = 'published'
+  } else if (scope === 'mine') {
+    filter.created_by_user_id = userNumId(req.user)
+  } else if (scope === 'adviser_review') {
+    filter.status = 'under_faculty_review'
+    filter.adviser_faculty_id = userNumId(req.user)
+  } else if (scope === 'pending_approval') {
+    filter.status = 'pending_approval'
+  } else if (scope === 'all' && (req.user.role === 'admin' || req.user.role === 'secretary')) {
+    filter = {}
+  } else {
+    filter.status = 'published'
+  }
+
+  if (statusFilter && (scope === 'all' || scope === 'mine')) {
+    filter = { ...filter, status: statusFilter }
+  }
+
+  if (year && Number.isFinite(year)) filter.year = year
+  if (course && ['CS', 'IT'].includes(course)) filter.course = course
+
+  let list = await store.listResearchPublications(filter)
+
+  if (keyword) {
+    const re = new RegExp(keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i')
+    list = list.filter(
+      (p) =>
+        re.test(p.title || '') ||
+        re.test(p.abstract || '') ||
+        (Array.isArray(p.keywords) && p.keywords.some((k) => re.test(String(k)))),
+    )
+  }
+  if (author) {
+    const re = new RegExp(author.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i')
+    list = list.filter((p) => {
+      if (re.test(p.adviser_name || '')) return true
+      const authors = Array.isArray(p.authors) ? p.authors : []
+      return authors.some((a) => re.test(String(a.display_name || '')))
+    })
+  }
+
+  if (scope === 'repository' || scope === 'mine') {
+    list = list.filter((item) => canViewResearchItem(req.user, item))
+  } else if (scope === 'adviser_review') {
+    list = list.filter((item) => canViewResearchItem(req.user, item))
+  } else if (scope === 'pending_approval') {
+    if (!['dean', 'department_chair', 'admin'].includes(req.user.role)) {
+      list = []
+    }
+  }
+
+  res.json({ ok: true, items: list.map(researchForClient) })
+}
+
+// --- College Research Repository ---
+app.get(
+  '/api/research/author-suggestions',
+  authMiddleware,
+  authorize(PERMISSIONS.COLLEGE_RESEARCH_VIEW),
+  asyncHandler(async (req, res) => {
+    const q = String(req.query.q || '').trim()
+    const lim = Math.min(80, Math.max(5, Number(req.query.limit) || 55))
+    const course = String(req.query.course || '').trim()
+    const list = await store.searchUsersForResearchAuthors(q, lim, course)
+    res.json({ ok: true, users: list })
+  }),
+)
+
+app.get(
+  '/api/research/advisers',
+  authMiddleware,
+  authorize(PERMISSIONS.COLLEGE_RESEARCH_VIEW),
+  asyncHandler(async (req, res) => {
+    const list = await store.listFacultyForResearchAdviser(300)
+    res.json({ ok: true, advisers: list })
+  }),
+)
+
+app.get(
+  '/api/research/analytics',
+  authMiddleware,
+  authorize(PERMISSIONS.COLLEGE_RESEARCH_VIEW),
+  asyncHandler(async (req, res) => {
+    const elevated = hasPermission(req.user.role, PERMISSIONS.VIEW_REPORTS) || req.user.role === 'admin'
+    if (!elevated) {
+      const pub = await store.listResearchPublications({ status: 'published' })
+      const byYear = {}
+      for (const p of pub) {
+        const y = p.year ?? 'unknown'
+        byYear[y] = (byYear[y] || 0) + 1
+      }
+      return res.json({
+        ok: true,
+        scope: 'public',
+        analytics: { totalPublished: pub.length, byYear },
+      })
+    }
+    const analytics = await store.getResearchAnalytics()
+    res.json({ ok: true, scope: 'full', analytics })
+  }),
+)
+
+// Primary list URL (avoids rare proxy / tooling issues with exact path "/api/research").
+app.get(
+  '/api/college-research',
+  authMiddleware,
+  authorize(PERMISSIONS.COLLEGE_RESEARCH_VIEW),
+  asyncHandler(handleResearchList),
+)
+
+app.get(
+  '/api/research',
+  authMiddleware,
+  authorize(PERMISSIONS.COLLEGE_RESEARCH_VIEW),
+  asyncHandler(handleResearchList),
+)
+
+// More specific routes must be registered before /api/research/:id
+app.get(
+  '/api/research/:id/file',
+  authMiddleware,
+  authorize(PERMISSIONS.COLLEGE_RESEARCH_VIEW),
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id)
+    const item = await store.findResearchPublicationById(id)
+    if (!item || !item.file_stored_name) return res.status(404).json({ error: 'File not found' })
+    if (!canViewResearchItem(req.user, item)) return res.status(403).json({ error: 'Forbidden' })
+    const base = path.basename(item.file_stored_name)
+    if (base !== item.file_stored_name || !base.startsWith('r-')) return res.status(400).json({ error: 'Invalid file' })
+    const fp = path.join(researchUploadDir, base)
+    if (!fs.existsSync(fp)) return res.status(404).json({ error: 'File missing on server' })
+    res.setHeader('Content-Type', 'application/pdf')
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(item.file_original_name || 'research.pdf')}"`)
+    fs.createReadStream(fp).pipe(res)
+  }),
+)
+
+app.get(
+  '/api/research/:id',
+  authMiddleware,
+  authorize(PERMISSIONS.COLLEGE_RESEARCH_VIEW),
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id)
+    if (!Number.isFinite(id) || id < 1) return res.status(400).json({ error: 'Invalid id' })
+    const item = await store.findResearchPublicationById(id)
+    if (!item) return res.status(404).json({ error: 'Not found' })
+    if (!canViewResearchItem(req.user, item)) return res.status(403).json({ error: 'Forbidden' })
+    res.json({ ok: true, item: researchForClient(item) })
+  }),
+)
+
+app.post(
+  '/api/research',
+  authMiddleware,
+  authorize(PERMISSIONS.DOC_CREATE),
+  (req, res, next) => {
+    researchUpload.single('file')(req, res, (err) => {
+      if (err) return res.status(400).json({ error: err.message || 'Upload failed' })
+      next()
+    })
+  },
+  asyncHandler(async (req, res) => {
+    const body = req.body || {}
+    const title = String(body.title || '').trim()
+    const abstract = String(body.abstract || '').trim()
+    const adviserName = String(body.adviserName || '').trim()
+    const adviserFacultyId = body.adviserFacultyId ? Number(body.adviserFacultyId) : null
+    const year = body.year != null ? Number(body.year) : NaN
+    const course = String(body.course || '').trim()
+    const category = String(body.category || '').trim()
+    const researchType = String(body.researchType || 'capstone').trim()
+    let keywords = []
+    try {
+      keywords = body.keywords ? JSON.parse(body.keywords) : []
+    } catch {
+      keywords = String(body.keywords || '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+    }
+    let coAuthorIds = []
+    try {
+      coAuthorIds = body.coAuthorUserIds ? JSON.parse(body.coAuthorUserIds) : []
+    } catch {
+      coAuthorIds = []
+    }
+    if (!Array.isArray(coAuthorIds)) coAuthorIds = []
+
+    const status = resolveNewResearchStatus(body, req.user)
+    if (status !== 'draft' && !title) return res.status(400).json({ error: 'Title is required' })
+    if (status !== 'draft' && !abstract) return res.status(400).json({ error: 'Abstract is required' })
+    if (!Number.isFinite(year) || year < 1970 || year > 2100) {
+      return res.status(400).json({ error: 'Valid year is required' })
+    }
+    if (!['CS', 'IT'].includes(course)) return res.status(400).json({ error: 'Course must be CS or IT' })
+    if (req.user.role === 'student' && status === 'under_faculty_review') {
+      if (!adviserFacultyId) return res.status(400).json({ error: 'Adviser is required for student submissions' })
+    }
+    if (status !== 'draft' && !req.file) {
+      return res.status(400).json({ error: 'PDF file is required for submission' })
+    }
+
+    const { authors, co_author_user_ids } = await buildResearchAuthors(store, req.user, coAuthorIds)
+    let advName = adviserName
+    if (adviserFacultyId) {
+      const adv = await store.getUserByIdForAuth(adviserFacultyId)
+      if (adv) advName = researchCreatorLabel(adv)
+    }
+
+    const now = new Date().toISOString()
+    let repository_ref
+    const yNow = new Date(now).getFullYear()
+    if (status === 'published') {
+      repository_ref = await store.nextResearchRepositoryRef(yNow)
+    }
+    const submission_ref = await store.nextResearchSubmissionRef(yNow)
+    
+    const doc = await store.createResearchPublication({
+      title,
+      abstract,
+      adviser_name: advName || null,
+      adviser_faculty_id: adviserFacultyId || null,
+      year,
+      course,
+      category: category || 'General',
+      research_type: researchType,
+      keywords,
+      authors,
+      co_author_user_ids,
+      file_stored_name: req.file ? req.file.filename : null,
+      file_original_name: req.file ? req.file.originalname : null,
+      status,
+      created_by_user_id: userNumId(req.user),
+      created_by_role: req.user.role,
+      reviewed_by_faculty_id: null,
+      review_comments: null,
+      approved_by_user_id: null,
+      approval_comments: null,
+      published_at: status === 'published' ? now : null,
+      submission_ref,
+      ...(repository_ref ? { repository_ref } : {}),
+    })
+
+    await store.createLog({
+      type: 'CREATE',
+      action: 'Research record created',
+      details: `Research "${title}" (${status}) id ${doc.id}`,
+      userId: userNumId(req.user),
+      userName: researchCreatorLabel(req.user),
+      userIp: req.ip,
+    })
+
+    res.status(201).json({ ok: true, item: researchForClient(doc) })
+  }),
+)
+
+app.patch(
+  '/api/research/:id',
+  authMiddleware,
+  authorize(PERMISSIONS.COLLEGE_RESEARCH_VIEW),
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id)
+    const item = await store.findResearchPublicationById(id)
+    if (!item) return res.status(404).json({ error: 'Not found' })
+    if (!canEditResearchItem(req.user, item)) return res.status(403).json({ error: 'Forbidden' })
+
+    const patch = {}
+    if (req.body.title !== undefined) patch.title = String(req.body.title || '').trim()
+    if (req.body.abstract !== undefined) patch.abstract = String(req.body.abstract || '').trim()
+    if (req.body.adviserName !== undefined) patch.adviser_name = String(req.body.adviserName || '').trim() || null
+    if (req.body.adviserFacultyId !== undefined) {
+      const af = req.body.adviserFacultyId ? Number(req.body.adviserFacultyId) : null
+      patch.adviser_faculty_id = af
+      if (af) {
+        const adv = await store.getUserByIdForAuth(af)
+        if (adv) patch.adviser_name = researchCreatorLabel(adv)
+      }
+    }
+    if (req.body.year !== undefined) {
+      const y = Number(req.body.year)
+      if (Number.isFinite(y)) patch.year = y
+    }
+    if (req.body.course !== undefined && ['CS', 'IT'].includes(String(req.body.course))) patch.course = String(req.body.course)
+    if (req.body.category !== undefined) patch.category = String(req.body.category || '').trim()
+    if (req.body.researchType !== undefined) patch.research_type = String(req.body.researchType || '').trim()
+    if (req.body.keywords !== undefined) {
+      if (Array.isArray(req.body.keywords)) patch.keywords = req.body.keywords.map((k) => String(k).trim()).filter(Boolean)
+    }
+    if (req.body.coAuthorUserIds !== undefined && Array.isArray(req.body.coAuthorUserIds)) {
+      const creatorRow = await store.getUserByIdForAuth(item.created_by_user_id)
+      if (!creatorRow) return res.status(400).json({ error: 'Primary author not found' })
+      const built = await buildResearchAuthors(store, creatorRow, req.body.coAuthorUserIds)
+      patch.authors = built.authors
+      patch.co_author_user_ids = built.co_author_user_ids
+    }
+    if (req.body.status !== undefined) {
+      const next = String(req.body.status || '').toLowerCase()
+      if (next === 'submitted' && item.status === 'draft') {
+        if (!item.file_stored_name) return res.status(400).json({ error: 'Upload a PDF before submitting' })
+        if (item.created_by_role === 'student') {
+          const adv = patch.adviser_faculty_id ?? item.adviser_faculty_id
+          if (!adv) return res.status(400).json({ error: 'Assign an adviser before submitting' })
+          patch.status = 'under_faculty_review'
+        }
+        else if (['secretary', 'admin'].includes(req.user.role)) {
+          patch.status = resolveNewResearchStatus({ status: 'submitted', requireApproval: req.body.requireApproval }, req.user)
+        } else patch.status = 'pending_approval'
+      }
+      if (next === 'draft' && ['draft', 'rejected'].includes(item.status)) patch.status = 'draft'
+      if (
+        next === 'resubmit' &&
+        item.status === 'rejected' &&
+        item.created_by_user_id === userNumId(req.user)
+      ) {
+        if (!item.file_stored_name) return res.status(400).json({ error: 'PDF required to resubmit' })
+        patch.status = item.created_by_role === 'student' ? 'under_faculty_review' : 'pending_approval'
+      }
+    }
+
+    const patchWithRef = await assignRepositoryRefIfPublishing(store, item, patch)
+    const updated = await store.updateResearchPublication(id, patchWithRef)
+    res.json({ ok: true, item: researchForClient(updated) })
+  }),
+)
+
+app.post(
+  '/api/research/:id/pdf',
+  authMiddleware,
+  authorize(PERMISSIONS.COLLEGE_RESEARCH_VIEW),
+  (req, res, next) => {
+    researchUpload.single('file')(req, res, (err) => {
+      if (err) return res.status(400).json({ error: err.message || 'Upload failed' })
+      next()
+    })
+  },
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id)
+    const item = await store.findResearchPublicationById(id)
+    if (!item) return res.status(404).json({ error: 'Not found' })
+    if (!canEditResearchItem(req.user, item)) return res.status(403).json({ error: 'Forbidden' })
+    if (!req.file) return res.status(400).json({ error: 'PDF required' })
+    if (item.file_stored_name) deleteResearchStoredFile(item.file_stored_name)
+    const updated = await store.updateResearchPublication(id, {
+      file_stored_name: req.file.filename,
+      file_original_name: req.file.originalname,
+    })
+    res.json({ ok: true, item: researchForClient(updated) })
+  }),
+)
+
+app.post(
+  '/api/research/:id/faculty-review',
+  authMiddleware,
+  authorize(PERMISSIONS.DOC_APPROVE),
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id)
+    const item = await store.findResearchPublicationById(id)
+    if (!item) return res.status(404).json({ error: 'Not found' })
+    if (item.status !== 'under_faculty_review') return res.status(400).json({ error: 'Not awaiting faculty review' })
+    const uid = userNumId(req.user)
+    if (Number(item.adviser_faculty_id) !== uid && req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Only the assigned adviser can review' })
+    }
+    const action = String(req.body?.action || '').toLowerCase()
+    const comments = String(req.body?.comments || '').trim() || null
+    if (action === 'reject') {
+      const updated = await store.updateResearchPublication(id, {
+        status: 'rejected',
+        reviewed_by_faculty_id: uid,
+        review_comments: comments,
+      })
+      await store.pushResearchWorkflow(id, { at: new Date().toISOString(), action: 'rejected_by_adviser', by_user_id: uid, note: comments })
+      return res.json({ ok: true, item: researchForClient(updated) })
+    }
+    if (action === 'approve') {
+      const updated = await store.updateResearchPublication(id, {
+        status: 'pending_approval',
+        reviewed_by_faculty_id: uid,
+        review_comments: comments,
+      })
+      await store.pushResearchWorkflow(id, { at: new Date().toISOString(), action: 'forwarded_to_chair_dean', by_user_id: uid, note: comments })
+      return res.json({ ok: true, item: researchForClient(updated) })
+    }
+    return res.status(400).json({ error: 'Invalid action' })
+  }),
+)
+
+app.post(
+  '/api/research/:id/final-approval',
+  authMiddleware,
+  authorize(PERMISSIONS.DOC_APPROVE),
+  asyncHandler(async (req, res) => {
+    if (!['dean', 'department_chair', 'admin'].includes(req.user.role)) {
+      return res.status(403).json({ error: 'Only Chair or Dean can finalize approval' })
+    }
+    const id = Number(req.params.id)
+    const item = await store.findResearchPublicationById(id)
+    if (!item) return res.status(404).json({ error: 'Not found' })
+    if (item.status !== 'pending_approval') return res.status(400).json({ error: 'Not pending approval' })
+    const action = String(req.body?.action || '').toLowerCase()
+    const comments = String(req.body?.comments || '').trim() || null
+    const uid = userNumId(req.user)
+    if (action === 'reject') {
+      const updated = await store.updateResearchPublication(id, {
+        status: 'rejected',
+        approved_by_user_id: uid,
+        approval_comments: comments,
+      })
+      await store.pushResearchWorkflow(id, { at: new Date().toISOString(), action: 'rejected_final', by_user_id: uid, note: comments })
+      return res.json({ ok: true, item: researchForClient(updated) })
+    }
+    if (action === 'approve') {
+      const now = new Date().toISOString()
+      const y = new Date(now).getFullYear()
+      const repository_ref = item.repository_ref || (await store.nextResearchRepositoryRef(y))
+      const updated = await store.updateResearchPublication(id, {
+        status: 'published',
+        approved_by_user_id: uid,
+        approval_comments: comments,
+        published_at: now,
+        repository_ref,
+      })
+      await store.pushResearchWorkflow(id, { at: now, action: 'published', by_user_id: uid, note: comments })
+      return res.json({ ok: true, item: researchForClient(updated) })
+    }
+    return res.status(400).json({ error: 'Invalid action' })
+  }),
+)
+
+app.delete(
+  '/api/research/:id',
+  authMiddleware,
+  requireRole(ROLES.ADMIN),
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id)
+    const item = await store.findResearchPublicationById(id)
+    if (!item) return res.status(404).json({ error: 'Not found' })
+    if (item.file_stored_name) deleteResearchStoredFile(item.file_stored_name)
+    await store.deleteResearchPublication(id)
+    res.json({ ok: true })
+  }),
+)
 
 // Evaluations
 app.get('/api/evaluations', authMiddleware, asyncHandler(async (req, res) => {

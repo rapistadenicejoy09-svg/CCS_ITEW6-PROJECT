@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { apiLogin } from '../lib/api'
 
 export default function AdminLogin() {
@@ -202,10 +202,7 @@ export default function AdminLogin() {
         </form>
 
         <div className="auth-footer-text">
-          <span>Need an account?</span>{' '}
-          <Link to="/admin/create-account" className="auth-link">
-            Create an account
-          </Link>
+          <span>Need access?</span> Contact your system administrator. Administrator accounts are not created from this login screen.
         </div>
       </div>
     </div>

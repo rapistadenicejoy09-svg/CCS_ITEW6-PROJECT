@@ -15,14 +15,16 @@ import FacultyEvaluations from './pages/FacultyEvaluations'
 import FacultyConsultation from './pages/FacultyConsultation'
 import FacultySubjects from './pages/FacultySubjects'
 import AdminLogin from './pages/AdminLogin'
-import AdminCreateAccount from './pages/AdminCreateAccount'
+import AdminBootstrapAccount from './pages/AdminBootstrapAccount'
+import AdminAdminsPage from './pages/AdminAdminsPage'
 import AdminFacultyList from './pages/AdminFacultyList'
 import AdminFacultyView from './pages/AdminFacultyView'
 import AdminCreateFaculty from './pages/AdminCreateFaculty'
-import AdminActivityLog from './pages/AdminActivityLog'
+import ActivityLog from './pages/ActivityLog'
 import StudentLogin from './pages/StudentLogin'
 import FacultyLogin from './pages/FacultyLogin'
 import FacultyRegister from './pages/FacultyRegister'
+import CollegeResearch from './pages/CollegeResearch'
 import { canAccessPath } from './lib/security'
 import './App.css'
 
@@ -46,12 +48,29 @@ function RequirePermission() {
   return <Outlet />
 }
 
+/** Old URL: send admins to in-app provision; others to first-time bootstrap. */
+function LegacyAdminCreateAccountRedirect() {
+  try {
+    const token = localStorage.getItem('authToken')
+    const raw = localStorage.getItem('authUser')
+    const user = raw ? JSON.parse(raw) : null
+    if (token && user?.role === 'admin') {
+      return <Navigate to="/admin/admins" replace />
+    }
+  } catch {
+    // fall through
+  }
+  return <Navigate to="/admin/bootstrap" replace />
+}
+
 export default function App() {
   return (
     <BrowserRouter>
       <Routes>
         <Route path="/admin/login" element={<AdminLogin />} />
-        <Route path="/admin/create-account" element={<AdminCreateAccount />} />
+        <Route path="/admin/create-account" element={<LegacyAdminCreateAccountRedirect />} />
+        <Route path="/admin/bootstrap" element={<AdminBootstrapAccount />} />
+        <Route path="/admin/provision-admin" element={<Navigate to="/admin/admins" replace />} />
         <Route path="/student/login" element={<StudentLogin />} />
         <Route path="/student/register" element={<Navigate to="/student/login" replace />} />
         <Route path="/faculty/login" element={<FacultyLogin />} />
@@ -68,7 +87,8 @@ export default function App() {
             <Route path="admin/faculty" element={<AdminFacultyList />} />
             <Route path="admin/faculty/:id" element={<AdminFacultyView />} />
             <Route path="admin/create-faculty" element={<AdminCreateFaculty />} />
-            <Route path="admin/activity-log" element={<AdminActivityLog />} />
+            <Route path="admin/admins" element={<AdminAdminsPage />} />
+            <Route path="activity-log" element={<ActivityLog />} />
             <Route path="admin/reports" element={<ModulePage />} />
             <Route path="faculty-my-profile" element={<FacultyProfile />} />
             <Route path="faculty/teaching-load" element={<FacultyTeachingLoad />} />
@@ -79,7 +99,7 @@ export default function App() {
             <Route path="faculty/subjects" element={<FacultySubjects />} />
             <Route path="events" element={<ModulePage />} />
             <Route path="scheduling" element={<ModulePage />} />
-            <Route path="college-research" element={<ModulePage />} />
+            <Route path="college-research" element={<CollegeResearch />} />
             <Route path="instructions" element={<ModulePage />} />
           </Route>
           </Route>

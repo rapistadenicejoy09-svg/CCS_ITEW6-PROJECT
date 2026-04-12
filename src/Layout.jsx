@@ -15,7 +15,8 @@ function studentHeaderPrimaryName(parsed) {
   )
 }
 
-function facultyHeaderPrimaryName(parsed) {
+/** First name, middle initial, last name — used in header for faculty and admin. */
+function staffHeaderPrimaryName(parsed, whenEmptyLabel) {
   const fn = String(parsed?.firstName || parsed?.first_name || parsed?.personal_information?.first_name || '').trim()
   const mn = String(parsed?.middleName || parsed?.middle_name || parsed?.personal_information?.middle_name || '').trim()
   const ln = String(parsed?.lastName || parsed?.last_name || parsed?.personal_information?.last_name || '').trim()
@@ -24,7 +25,7 @@ function facultyHeaderPrimaryName(parsed) {
   if (built) return built
 
   const full = String(parsed?.displayName || parsed?.fullName || parsed?.full_name || parsed?.identifier || '').trim()
-  if (!full) return 'Staff'
+  if (!full) return whenEmptyLabel
   const parts = full.split(/\s+/).filter(Boolean)
   if (parts.length >= 2) {
     const first = parts[0]
@@ -34,6 +35,14 @@ function facultyHeaderPrimaryName(parsed) {
     return [first, middleInitial, last].filter(Boolean).join(' ')
   }
   return full
+}
+
+function facultyHeaderPrimaryName(parsed) {
+  return staffHeaderPrimaryName(parsed, 'Staff')
+}
+
+function adminHeaderPrimaryName(parsed) {
+  return staffHeaderPrimaryName(parsed, 'Administrator')
 }
 
 const ALL_MODULES = [
@@ -49,8 +58,9 @@ const ALL_MODULES = [
   { id: 'scheduling', code: '1.4', title: 'Scheduling', path: '/scheduling', icon: <svg className="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg> },
   { id: 'college-research', code: '1.5', title: 'College Research', path: '/college-research', icon: <svg className="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg> },
   { id: 'instructions', code: '1.6', title: 'Instructions', path: '/instructions', icon: <svg className="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a4 4 0 0 0-4-4H2z"></path><path d="M22 3h-6a4 4 0 0 0-4 4v14a4 4 0 0 1 4-4h6z"></path></svg> },
-  { id: 'academic-reports', code: '1.7', title: 'Reports', path: '/admin/reports', icon: <svg className="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg> },
-  { id: 'activity-log', code: '1.8', title: 'Activity Log', path: '/admin/activity-log', icon: <svg className="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg> },
+  { id: 'admin-admins-list', code: '1.8', title: 'Admin List', path: '/admin/admins', icon: <svg className="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg> },
+  { id: 'activity-log', code: '1.7', title: 'Activity Log', path: '/activity-log', icon: <svg className="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg> },
+  { id: 'academic-reports', code: '1.9', title: 'Reports', path: '/admin/reports', icon: <svg className="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg> },
 ]
 
 export default function Layout() {
@@ -107,7 +117,7 @@ export default function Layout() {
         parsed?.role === 'student' && (parsed?.mustChangePassword === true || parsed?.mustChangePassword === 1),
       )
       if (parsed?.role === 'admin') {
-        setPrimaryLabel(String(parsed.displayName || parsed.fullName || parsed.identifier || '').trim() || 'Administrator')
+        setPrimaryLabel(adminHeaderPrimaryName(parsed))
         setSecondaryLabel('')
         path = '/admin-profile'
         setHeaderRoleLabel('Admin')
@@ -245,81 +255,83 @@ export default function Layout() {
               const facultyGroup = modules.filter(
                 (m) => m.id.startsWith('faculty-') || m.id === 'teaching-load' || m.id === 'admin-subjects',
               )
-              
-              const otherModules = modules.filter((m) => !facultyGroup.includes(m))
-
+              const facultyIds = new Set(facultyGroup.map(m => m.id))
               const isChildActive = facultyGroup.some((m) => window.location.pathname === m.path)
+              let renderedFacultyGroup = false
 
-              return (
-                <>
-                  {otherModules.map((m) => (
-                    <NavLink
-                      key={m.id}
-                      to={m.path}
-                      className={({ isActive }) => 'nav-item' + (isActive ? ' nav-item-active' : '')}
-                    >
-                      {m.icon}
-                      {m.title}
-                    </NavLink>
-                  ))}
-
-                  {facultyGroup.length > 0 && (
-                    <div className="nav-group">
-                      <div
-                        className={`nav-item nav-group-header ${isFacultyExpanded || isChildActive ? 'expanded' : ''} ${
-                          isChildActive ? 'nav-group-header-active' : ''
-                        }`}
-                        onClick={() => setIsFacultyExpanded(!isFacultyExpanded)}
-                        role="button"
-                        tabIndex={0}
-                      >
-                        <svg
-                          className="nav-icon"
-                          width="18"
-                          height="18"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="2"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
+              return modules.map((m) => {
+                if (facultyIds.has(m.id)) {
+                  if (renderedFacultyGroup) return null
+                  renderedFacultyGroup = true
+                  return (
+                    facultyGroup.length > 0 && (
+                      <div className="nav-group" key="faculty-module-group">
+                        <div
+                          className={`nav-item nav-group-header ${isFacultyExpanded || isChildActive ? 'expanded' : ''} ${
+                            isChildActive ? 'nav-group-header-active' : ''
+                          }`}
+                          onClick={() => setIsFacultyExpanded(!isFacultyExpanded)}
+                          role="button"
+                          tabIndex={0}
                         >
-                          <path d="M2 3h6a4 4 0 0 1 4 4v14a4 4 0 0 0-4-4H2z"></path>
-                          <path d="M22 3h-6a4 4 0 0 0-4 4v14a4 4 0 0 1 4-4h6z"></path>
-                        </svg>
-                        Faculty Module
-                        <svg
-                          className="nav-chevron"
-                          width="14"
-                          height="14"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="2"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        >
-                          <polyline points="9 18 15 12 9 6"></polyline>
-                        </svg>
-                      </div>
-                      {(isFacultyExpanded || isChildActive) && (
-                        <div className="nav-group-children">
-                          {facultyGroup.map((m) => (
-                            <NavLink
-                              key={m.id}
-                              to={m.path}
-                              className={({ isActive }) => 'nav-item' + (isActive ? ' nav-item-active' : '')}
-                            >
-                              {m.icon}
-                              {m.title}
-                            </NavLink>
-                          ))}
+                          <svg
+                            className="nav-icon"
+                            width="18"
+                            height="18"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          >
+                            <path d="M2 3h6a4 4 0 0 1 4 4v14a4 4 0 0 0-4-4H2z"></path>
+                            <path d="M22 3h-6a4 4 0 0 0-4 4v14a4 4 0 0 1 4-4h6z"></path>
+                          </svg>
+                          Faculty Module
+                          <svg
+                            className="nav-chevron"
+                            width="14"
+                            height="14"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          >
+                            <polyline points="9 18 15 12 9 6"></polyline>
+                          </svg>
                         </div>
-                      )}
-                    </div>
-                  )}
-                </>
-              )
+                        {(isFacultyExpanded || isChildActive) && (
+                          <div className="nav-group-children">
+                            {facultyGroup.map((gm) => (
+                              <NavLink
+                                key={gm.id}
+                                to={gm.path}
+                                className={({ isActive }) => 'nav-item' + (isActive ? ' nav-item-active' : '')}
+                              >
+                                {gm.icon}
+                                {gm.title}
+                              </NavLink>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  )
+                }
+                return (
+                  <NavLink
+                    key={m.id}
+                    to={m.path}
+                    className={({ isActive }) => 'nav-item' + (isActive ? ' nav-item-active' : '')}
+                  >
+                    {m.icon}
+                    {m.title}
+                  </NavLink>
+                )
+              })
             })()}
           </nav>
 

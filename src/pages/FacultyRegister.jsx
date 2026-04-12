@@ -16,7 +16,7 @@ export default function FacultyRegister() {
     password: '',
     confirmPassword: '',
     role: 'faculty_professor',
-    department: '',
+    department: 'Information Technology',
     specialization: '',
   })
   const [error, setError] = useState('')
@@ -28,6 +28,14 @@ export default function FacultyRegister() {
   useEffect(() => {
     document.body.dataset.theme = 'light'
   }, [])
+
+  useEffect(() => {
+    if (form.role === 'dean' || form.role === 'secretary') {
+      setForm(prev => ({ ...prev, department: 'CCS' }))
+    } else if (form.department === 'CCS') {
+      setForm(prev => ({ ...prev, department: 'Information Technology' }))
+    }
+  }, [form.role])
 
   const handleChange = (e) => {
     const { name, value } = e.target
@@ -195,10 +203,11 @@ export default function FacultyRegister() {
                   value={form.department}
                   onChange={handleChange}
                   required
+                  disabled={form.role === 'dean' || form.role === 'secretary'}
                 >
-                  <option value="">Select Department</option>
                   <option value="Information Technology">Information Technology</option>
                   <option value="Computer Science">Computer Science</option>
+                  <option value="CCS" disabled hidden>CCS Department</option>
                 </select>
               </label>
 

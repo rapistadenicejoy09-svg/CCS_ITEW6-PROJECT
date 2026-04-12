@@ -17,6 +17,20 @@ function getRole() {
   }
 }
 
+/** First name, middle initial, last name (matches admin header). */
+function adminFormattedDisplayName(profile) {
+  if (!profile) return 'Administrator'
+  const fn = String(profile.firstName || '').trim()
+  const mn = String(profile.middleName || '').trim()
+  const ln = String(profile.lastName || '').trim()
+  const mi = mn ? `${mn.charAt(0).toUpperCase()}.` : ''
+  const built = [fn, mi, ln].filter(Boolean).join(' ')
+  if (built) return built
+  return (
+    String(profile.fullName || profile.displayName || profile.identifier || '').trim() || 'Administrator'
+  )
+}
+
 function mergeAuthUserFromProfile(profile) {
   try {
     const raw = localStorage.getItem('authUser')
@@ -26,6 +40,9 @@ function mergeAuthUserFromProfile(profile) {
       fullName: profile.fullName ?? u.fullName,
       profileImageUrl: profile.profileImageUrl ?? u.profileImageUrl,
       displayName: profile.displayName ?? profile.fullName ?? u.displayName,
+      firstName: profile.firstName ?? u.firstName,
+      middleName: profile.middleName ?? u.middleName,
+      lastName: profile.lastName ?? u.lastName,
     }
     localStorage.setItem('authUser', JSON.stringify(next))
     window.dispatchEvent(new Event('ccs-auth-user-updated'))
@@ -40,7 +57,9 @@ export default function AdminProfile() {
   const [savingProfile, setSavingProfile] = useState(false)
   const [profileMsg, setProfileMsg] = useState('')
 
-  const [fullNameInput, setFullNameInput] = useState('')
+  const [firstNameInput, setFirstNameInput] = useState('')
+  const [middleNameInput, setMiddleNameInput] = useState('')
+  const [lastNameInput, setLastNameInput] = useState('')
   const [profileImageUrlInput, setProfileImageUrlInput] = useState('')
 
   const [currentPassword, setCurrentPassword] = useState('')
@@ -68,7 +87,9 @@ export default function AdminProfile() {
       const res = await apiGetAccountProfile(token)
       const p = res?.profile
       setProfile(p)
-      setFullNameInput(p?.fullName || '')
+      setFirstNameInput(p?.firstName || '')
+      setMiddleNameInput(p?.middleName || '')
+      setLastNameInput(p?.lastName || '')
       setProfileImageUrlInput(p?.profileImageUrl || '')
       if (p?.twofaEnabled) setTwoFAQr(null)
     } catch (e) {
@@ -84,11 +105,24 @@ export default function AdminProfile() {
     e.preventDefault()
     const token = localStorage.getItem('authToken')
     if (!token) return
+    const fn = firstNameInput.trim()
+    const mn = middleNameInput.trim()
+    const ln = lastNameInput.trim()
+    if (!fn || !ln) {
+      setProfileMsg('First name and last name are required.')
+      return
+    }
     setSavingProfile(true)
     setProfileMsg('')
     try {
+      const fullName = [fn, mn, ln].filter(Boolean).join(' ')
       const res = await apiPatchAccountProfile(token, {
-        fullName: fullNameInput.trim(),
+        fullName,
+        personalInformation: {
+          first_name: fn,
+          middle_name: mn,
+          last_name: ln,
+        },
         profileImageUrl: profileImageUrlInput.trim(),
       })
       const p = res?.profile
@@ -195,8 +229,8 @@ export default function AdminProfile() {
     return <div className="p-8 text-center text-[var(--text-muted)]">Administrators only.</div>
   }
 
-  const displayName = profile?.fullName || profile?.identifier || 'Administrator'
-  const heroLetter = displayName.charAt(0).toUpperCase()
+  const displayName = adminFormattedDisplayName(profile)
+  const heroLetter = (String(profile?.firstName || '').trim() || displayName).charAt(0).toUpperCase() || '?'
 
   return (
     <div className="profile-page profile-page-admin">
@@ -240,16 +274,43 @@ export default function AdminProfile() {
               </div>
               <p className="text-xs text-[var(--text-muted)] mt-1">Administrators sign in with this email address.</p>
             </div>
-            <div>
-              <label className="block text-xs font-bold uppercase tracking-wider text-[var(--text-muted)] mb-1">
-                Full name
-              </label>
-              <input
-                className="search-input w-full"
-                value={fullNameInput}
-                onChange={(e) => setFullNameInput(e.target.value)}
-                placeholder="Display name"
-              />
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-[var(--text-muted)] mb-1">
+                  First name <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  className="search-input w-full"
+                  value={firstNameInput}
+                  onChange={(e) => setFirstNameInput(e.target.value)}
+                  placeholder="Given name"
+                  autoComplete="given-name"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-[var(--text-muted)] mb-1">
+                  Middle name
+                </label>
+                <input
+                  className="search-input w-full"
+                  value={middleNameInput}
+                  onChange={(e) => setMiddleNameInput(e.target.value)}
+                  placeholder="Optional"
+                  autoComplete="additional-name"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-[var(--text-muted)] mb-1">
+                  Last name <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  className="search-input w-full"
+                  value={lastNameInput}
+                  onChange={(e) => setLastNameInput(e.target.value)}
+                  placeholder="Family name"
+                  autoComplete="family-name"
+                />
+              </div>
             </div>
             <div>
               <label className="block text-xs font-bold uppercase tracking-wider text-[var(--text-muted)] mb-1">

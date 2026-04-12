@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState, useCallback } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import SuccessModal from '../components/SuccessModal'
-import { apiAdminPatchUser, apiAdminUsers, apiLogin } from '../lib/api'
+import ConfirmDeleteModal from '../components/ConfirmDeleteModal'
+import { apiAdminPatchUser, apiAdminUsers } from '../lib/api'
 
 function getRole() {
   try {
@@ -129,29 +130,9 @@ export default function AdminFacultyList() {
   const [viewMode, setViewMode] = useState('grid')
 
   const [deleteTarget, setDeleteTarget] = useState(null)
-  const [deletePassword, setDeletePassword] = useState('')
-  const [deleteTwoFACode, setDeleteTwoFACode] = useState('')
-  const [deleteNeeds2FA, setDeleteNeeds2FA] = useState(false)
-  const [deleteModalError, setDeleteModalError] = useState('')
-  const [deleteSubmitting, setDeleteSubmitting] = useState(false)
-  const [deleteRemoveCooldown, setDeleteRemoveCooldown] = useState(0)
-
   const isAdmin = getRole() === 'admin'
 
-  useEffect(() => {
-    if (!deleteTarget) {
-      setDeleteRemoveCooldown(0)
-      return
-    }
-    setDeleteRemoveCooldown(3)
-    let remaining = 3
-    const id = setInterval(() => {
-      remaining -= 1
-      setDeleteRemoveCooldown(Math.max(0, remaining))
-      if (remaining <= 0) clearInterval(id)
-    }, 1000)
-    return () => clearInterval(id)
-  }, [deleteTarget])
+
 
   const loadFaculty = useCallback(async () => {
     const token = localStorage.getItem('authToken')
@@ -188,10 +169,6 @@ export default function AdminFacultyList() {
 
   function closeDeleteModal() {
     setDeleteTarget(null)
-    setDeletePassword('')
-    setDeleteTwoFACode('')
-    setDeleteNeeds2FA(false)
-    setDeleteModalError('')
   }
 
   async function verifyPasswordAndDelete() {
@@ -200,46 +177,10 @@ export default function AdminFacultyList() {
       closeDeleteModal()
       return
     }
-    const adminId = getAdminLoginIdentifier()
-    if (!adminId) {
-      setDeleteModalError('Could not determine your account. Sign in again.')
-      return
-    }
-    if (!deletePassword.trim()) {
-      setDeleteModalError('Enter your password to confirm.')
-      return
-    }
-    if (deleteNeeds2FA && deleteTwoFACode.trim().length !== 6) {
-      setDeleteModalError('Enter your 6-digit authenticator or backup code.')
-      return
-    }
-
     const token = localStorage.getItem('authToken')
-    if (!token) {
-      setDeleteModalError('Missing auth token.')
-      return
-    }
+    if (!token) throw new Error('Missing auth token.')
 
-    setDeleteModalError('')
-    setDeleteSubmitting(true)
     try {
-      try {
-        await apiLogin({
-          identifier: adminId,
-          password: deletePassword,
-          twoFACode: deleteNeeds2FA ? deleteTwoFACode.trim() : undefined,
-        })
-      } catch (loginErr) {
-        const msg = loginErr?.data?.error || loginErr?.message || ''
-        if (msg === 'Two-factor required' && !deleteNeeds2FA) {
-          setDeleteNeeds2FA(true)
-          setDeleteModalError('Two-factor authentication is enabled. Enter your 6-digit code.')
-          return
-        }
-        setDeleteModalError(loginErr?.message || 'Password verification failed.')
-        return
-      }
-
       await apiAdminPatchUser(token, target.id, { isActive: false })
       closeDeleteModal()
       await loadFaculty()
@@ -248,9 +189,7 @@ export default function AdminFacultyList() {
         message: `${getFacultyName(target)} has been deactivated successfully.`,
       })
     } catch (err) {
-      setDeleteModalError(err?.message || 'Failed to deactivate account.')
-    } finally {
-      setDeleteSubmitting(false)
+      throw new Error(err?.message || 'Failed to deactivate account.')
     }
   }
 
@@ -479,7 +418,6 @@ export default function AdminFacultyList() {
                         <button
                           className="flex items-center justify-center px-3 py-1.5 bg-rose-50/50 text-rose-600 hover:bg-rose-100 hover:text-rose-700 rounded-lg border border-rose-200 transition-all font-medium text-xs disabled:opacity-30"
                           onClick={() => setDeleteTarget(f)}
-                          disabled={deleteSubmitting}
                         >
                           <IconTrash />
                         </button>
@@ -556,100 +494,22 @@ export default function AdminFacultyList() {
 
       {/* Delete Modal */}
       {deleteTarget && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-          <button
-            type="button"
-            className="absolute inset-0 bg-black/40 backdrop-blur-[2px]"
-            aria-label="Close dialog"
-            onClick={() => !deleteSubmitting && closeDeleteModal()}
-          />
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="deactivate-faculty-title"
-            className="admin-delete-modal-content relative bg-[var(--card-bg)] border border-[var(--border-color)] rounded-[var(--radius-lg)] p-7 max-w-md w-full shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex flex-col">
-              <div className="flex flex-col items-center text-center mb-4">
-                <div className="w-14 h-14 rounded-full bg-rose-500/15 text-rose-600 dark:text-rose-400 flex items-center justify-center mb-4 ring-4 ring-rose-500/10">
-                  <IconTrash />
-                </div>
-                <h2 id="deactivate-faculty-title" className="text-xl font-bold text-[var(--text)] mb-2">
-                  Deactivate faculty account?
-                </h2>
-                <p className="text-sm text-[var(--text-muted)] leading-relaxed">
-                  This deactivates{' '}
-                  <span className="font-semibold text-[var(--text)]">
-                    {getFacultyName(deleteTarget)}
-                  </span>
-                  . They will no longer be able to sign in. Enter your administrator password to confirm.
-                </p>
-              </div>
-
-              <label className="block text-[11px] font-bold uppercase tracking-wider text-[var(--text-muted)] mb-1.5">
-                Your password
-              </label>
-              <input
-                type="password"
-                placeholder="Administrator password"
-                className="search-input w-full mb-4"
-                value={deletePassword}
-                onChange={(e) => setDeletePassword(e.target.value)}
-                disabled={deleteSubmitting}
-              />
-
-              {deleteNeeds2FA && (
-                <>
-                  <label className="block text-[11px] font-bold uppercase tracking-wider text-[var(--text-muted)] mb-1.5">
-                    Two-factor code
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="000000"
-                    className="search-input w-full mb-4 font-mono tracking-widest"
-                    value={deleteTwoFACode}
-                    onChange={(e) => setDeleteTwoFACode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                    disabled={deleteSubmitting}
-                  />
-                </>
-              )}
-
-              {deleteModalError && (
-                <p className="text-sm text-rose-600 dark:text-rose-400 mb-4 text-center">{deleteModalError}</p>
-              )}
-
-              <p className="text-[11px] text-center text-[var(--text-muted)] mb-3">
-                {deleteRemoveCooldown > 0
-                  ? `The deactivate action unlocks in ${deleteRemoveCooldown}s so you can review the details above.`
-                  : 'You can confirm deactivation when your password (and 2FA, if required) are entered.'}
-              </p>
-
-              <div className="flex w-full gap-3 mt-2">
-                <button
-                  type="button"
-                  className="flex-1 px-4 py-3 text-sm font-semibold text-[var(--text-muted)] hover:text-[var(--text)] bg-transparent hover:bg-[var(--border-color)]/30 border border-[var(--border-color)] rounded-xl transition-all duration-200 disabled:opacity-50"
-                  onClick={closeDeleteModal}
-                  disabled={deleteSubmitting}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  className="flex-1 px-4 py-3 text-sm font-semibold bg-rose-600 text-white rounded-xl hover:bg-rose-700 shadow-lg shadow-rose-600/20 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-rose-600"
-                  onClick={verifyPasswordAndDelete}
-                  disabled={deleteSubmitting || deleteRemoveCooldown > 0}
-                >
-                  {deleteSubmitting
-                    ? 'Working…'
-                    : deleteRemoveCooldown > 0
-                      ? `Deactivate (${deleteRemoveCooldown}s)`
-                      : 'Deactivate faculty'}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+        <ConfirmDeleteModal
+          title="Deactivate faculty account?"
+          description={
+            <p className="leading-relaxed">
+              This deactivates{' '}
+              <span className="font-semibold text-[var(--text)]">
+                {getFacultyName(deleteTarget)}
+              </span>
+              . They will no longer be able to sign in. Enter your administrator password to confirm.
+            </p>
+          }
+          confirmLabel="Deactivate faculty"
+          adminIdentifier={getAdminLoginIdentifier()}
+          onConfirm={verifyPasswordAndDelete}
+          onClose={closeDeleteModal}
+        />
       )}
       <SuccessModal
         open={successModal.open}

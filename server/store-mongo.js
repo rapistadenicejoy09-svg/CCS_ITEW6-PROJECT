@@ -73,6 +73,7 @@ export async function openMongoStore() {
   const documents = db.collection('documents')
   const evaluations = db.collection('evaluations')
   const logs = db.collection('logs')
+  const researchPublications = db.collection('research_publications')
 
   // Ensure uniqueness constraints for user identity and sessions.
   await Promise.all([
@@ -101,6 +102,20 @@ export async function openMongoStore() {
     evaluations.createIndex({ faculty_id: 1 }),
     logs.createIndex({ id: 1 }, { unique: true, name: 'logs_id_unique' }),
     logs.createIndex({ created_at: -1 }),
+    researchPublications.createIndex({ id: 1 }, { unique: true, name: 'research_publications_id_unique' }),
+    researchPublications.createIndex({ status: 1, year: -1 }),
+    researchPublications.createIndex({ created_by_user_id: 1 }),
+    researchPublications.createIndex({ adviser_faculty_id: 1 }),
+    researchPublications.createIndex({ year: -1 }),
+    researchPublications.createIndex({ course: 1 }),
+    researchPublications.createIndex(
+      { repository_ref: 1 },
+      { unique: true, sparse: true, name: 'research_publications_repository_ref_unique' },
+    ),
+    researchPublications.createIndex(
+      { submission_ref: 1 },
+      { unique: true, sparse: true, name: 'research_publications_submission_ref_unique' },
+    ),
   ])
 
     async function nextId(collectionName) {
@@ -122,6 +137,42 @@ export async function openMongoStore() {
         console.error(`[DB] nextId failure for ${collectionName}:`, err)
         throw err
       }
+    }
+
+    async function allocateResearchRepositoryRefForYear(publishYear) {
+      let y = Number(publishYear)
+      if (!Number.isFinite(y) || y < 1970 || y > 2100) {
+        y = new Date().getFullYear()
+      }
+      const counterId = `research_repo_ref_${y}`
+      const res = await counters.findOneAndUpdate(
+        { _id: counterId },
+        { $inc: { seq: 1 } },
+        { upsert: true, returnDocument: 'after' },
+      )
+      const seq = res?.value?.seq ?? res?.seq
+      if (typeof seq !== 'number') {
+        throw new Error('Failed to allocate repository reference')
+      }
+      return `CCS-CR-${y}-${String(seq).padStart(5, '0')}`
+    }
+
+    async function allocateResearchSubmissionRefForYear(publishYear) {
+      let y = Number(publishYear)
+      if (!Number.isFinite(y) || y < 1970 || y > 2100) {
+        y = new Date().getFullYear()
+      }
+      const counterId = `research_sub_ref_${y}`
+      const res = await counters.findOneAndUpdate(
+        { _id: counterId },
+        { $inc: { seq: 1 } },
+        { upsert: true, returnDocument: 'after' },
+      )
+      const seq = res?.value?.seq ?? res?.seq
+      if (typeof seq !== 'number') {
+        throw new Error('Failed to allocate submission reference')
+      }
+      return `CCS-SUB-${y}-${String(seq).padStart(5, '0')}`
     }
 
   return {
@@ -222,6 +273,10 @@ export async function openMongoStore() {
       )
     },
 
+    async countUsersByRole(role) {
+      return await users.countDocuments({ role: String(role || '').trim() })
+    },
+
     async createUser({
       role,
       identifier,
@@ -282,6 +337,18 @@ export async function openMongoStore() {
         doc.last_name = names.last_name
         if (names.full_name) doc.full_name = names.full_name
         doc.must_change_password = 1
+      } else if (role !== 'student') {
+        const names = deriveStudentRootNames(personalInformation || {}, fullName)
+        doc.personal_information = {
+          ...(personalInformation || {}),
+          first_name: names.first_name || '',
+          middle_name: names.middle_name || '',
+          last_name: names.last_name || '',
+        }
+        doc.first_name = names.first_name
+        doc.middle_name = names.middle_name
+        doc.last_name = names.last_name
+        if (names.full_name) doc.full_name = names.full_name
       }
 
       await users.insertOne(doc)
@@ -355,6 +422,9 @@ export async function openMongoStore() {
               first_name: 1,
               middle_name: 1,
               last_name: 1,
+              department: 1,
+              specialization: 1,
+              bio: 1,
             },
           },
         )
@@ -390,6 +460,9 @@ export async function openMongoStore() {
             first_name: 1,
             middle_name: 1,
             last_name: 1,
+            department: 1,
+            specialization: 1,
+            bio: 1,
           },
         },
       )
@@ -426,6 +499,8 @@ export async function openMongoStore() {
             first_name: 1,
             middle_name: 1,
             last_name: 1,
+            department: 1,
+            specialization: 1,
           },
         },
       )
@@ -530,6 +605,9 @@ export async function openMongoStore() {
             middle_name: 1,
             last_name: 1,
             must_change_password: 1,
+            department: 1,
+            specialization: 1,
+            bio: 1,
           },
         },
       )
@@ -567,22 +645,48 @@ export async function openMongoStore() {
         personal_information: user.personal_information || {},
         twofa_enabled: !!user.twofa_enabled,
         profile_image_url: user.profile_image_url || null,
+        department: user.department || null,
+        specialization: user.specialization || null,
+        bio: user.bio || null,
       }
     },
 
     async updateAccountProfile(userId, body) {
       const idNum = Number(userId)
       const idQuery = { $or: [{ id: idNum }, { id: String(userId) }] }
+      const u = await users.findOne(idQuery, { projection: { _id: 0, role: 1, personal_information: 1 } })
+      if (!u) return null
+
       const set = {}
       if (body.profileImageUrl !== undefined) {
         set.profile_image_url = String(body.profileImageUrl || '').trim() || null
       }
-      if (body.fullName !== undefined) {
-        const u = await users.findOne(idQuery, { projection: { _id: 0, role: 1 } })
-        if (u && u.role !== 'student') {
-          set.full_name = String(body.fullName || '').trim() || null
-        }
+      if (body.bio !== undefined) {
+        set.bio = String(body.bio || '').trim() || null
       }
+      if (body.department !== undefined && u.role !== 'student') {
+        set.department = String(body.department || '').trim() || null
+      }
+      if (body.specialization !== undefined && u.role !== 'student') {
+        set.specialization = String(body.specialization || '').trim() || null
+      }
+
+      if (body.personalInformation !== undefined && u.role !== 'student') {
+        const piNext = body.personalInformation || {}
+        const piCurrent = u.personal_information || {}
+        const fn = String(piNext.first_name ?? piNext.firstName ?? piCurrent.first_name ?? '').trim()
+        const mn = String(piNext.middle_name ?? piNext.middleName ?? piCurrent.middle_name ?? '').trim()
+        const ln = String(piNext.last_name ?? piNext.lastName ?? piCurrent.last_name ?? '').trim()
+        set.personal_information = { ...piCurrent, ...piNext, first_name: fn, middle_name: mn, last_name: ln }
+        const names = deriveStudentRootNames(set.personal_information, [fn, mn, ln].filter(Boolean).join(' ') || null)
+        set.first_name = names.first_name
+        set.middle_name = names.middle_name
+        set.last_name = names.last_name
+        if (names.full_name) set.full_name = names.full_name
+      } else if (body.fullName !== undefined && u.role !== 'student') {
+        set.full_name = String(body.fullName || '').trim() || null
+      }
+
       if (Object.keys(set).length > 0) {
         await users.updateOne(idQuery, { $set: set })
       }
@@ -782,7 +886,22 @@ export async function openMongoStore() {
 
     // Logs
     async listLogs(limit = 100) {
-      return await logs.find({}).sort({ created_at: -1 }).limit(limit).toArray()
+      const logsArray = await logs.find({}).sort({ created_at: -1 }).limit(limit).toArray()
+      const userIds = [...new Set(logsArray.map(l => l.user_id).filter(Boolean))]
+      const userRows = await users.find({ id: { $in: userIds } }, { projection: { id: 1, role: 1 } }).toArray()
+      const roleMap = {}
+      for (const u of userRows) {
+        roleMap[u.id] = u.role
+      }
+      return logsArray.map(l => ({ ...l, user_role: l.user_role || roleMap[l.user_id] || 'system' }))
+    },
+
+    async listUserLogs(limit = 100, userId) {
+      if (!userId) return []
+      const logsArray = await logs.find({ user_id: userId }).sort({ created_at: -1 }).limit(limit).toArray()
+      const u = await users.findOne({ id: userId }, { projection: { role: 1 } })
+      const urole = u ? u.role : 'system'
+      return logsArray.map(l => ({ ...l, user_role: l.user_role || urole }))
     },
 
     async createLog({ type, action, details, userId, userName, userIp }) {
@@ -805,7 +924,311 @@ export async function openMongoStore() {
         console.error(`[LOG ERROR] Failed to create log ${action}:`, err)
         return null
       }
-    }
+    },
+
+    // --- College Research Repository ---
+    async listResearchPublications(filter = {}) {
+      return await researchPublications.find(filter).sort({ year: -1, updated_at: -1 }).toArray()
+    },
+
+    async findResearchPublicationById(id) {
+      return await researchPublications.findOne({ id: Number(id) })
+    },
+
+    async createResearchPublication(data) {
+      const id = await nextId('research_publications')
+      const now = new Date().toISOString()
+      const doc = {
+        id,
+        ...data,
+        workflow_history: data.workflow_history || [{ at: now, action: 'created', by_user_id: data.created_by_user_id, note: null }],
+        created_at: now,
+        updated_at: now,
+      }
+      await researchPublications.insertOne(doc)
+      return doc
+    },
+
+    async updateResearchPublication(id, patch) {
+      const now = new Date().toISOString()
+      await researchPublications.updateOne(
+        { id: Number(id) },
+        { $set: { ...patch, updated_at: now } },
+      )
+      return await researchPublications.findOne({ id: Number(id) })
+    },
+
+    async pushResearchWorkflow(id, entry) {
+      await researchPublications.updateOne(
+        { id: Number(id) },
+        {
+          $push: { workflow_history: entry },
+          $set: { updated_at: new Date().toISOString() },
+        },
+      )
+      return await researchPublications.findOne({ id: Number(id) })
+    },
+
+    async deleteResearchPublication(id) {
+      await researchPublications.deleteOne({ id: Number(id) })
+    },
+
+    /** Next display ID for published works: CCS-CR-{year}-00001 (per calendar year). */
+    async nextResearchRepositoryRef(publishYear) {
+      return allocateResearchRepositoryRefForYear(publishYear)
+    },
+
+    /** Default ID for submitted works before publication: CCS-SUB-{year}-00001 */
+    async nextResearchSubmissionRef(publishYear) {
+      return allocateResearchSubmissionRefForYear(publishYear)
+    },
+
+    /** Assign CCS-SUB-* IDs to any documents lacking one. */
+    async backfillSubmissionRefs() {
+      const missing = await researchPublications
+        .find({
+          $or: [{ submission_ref: { $exists: false } }, { submission_ref: null }, { submission_ref: '' }],
+        })
+        .sort({ id: 1 })
+        .toArray()
+      let count = 0
+      for (const p of missing) {
+        const at = p.created_at || new Date().toISOString()
+        const y = new Date(at).getFullYear()
+        const ref = await allocateResearchSubmissionRefForYear(y)
+        await researchPublications.updateOne(
+          { id: p.id },
+          { $set: { submission_ref: ref, updated_at: new Date().toISOString() } },
+        )
+        count += 1
+      }
+      return count
+    },
+
+    /** Assign CCS-CR-* IDs to published documents missing one (startup / migration). */
+    async backfillPublishedRepositoryRefs() {
+      const missing = await researchPublications
+        .find({
+          status: 'published',
+          $or: [{ repository_ref: { $exists: false } }, { repository_ref: null }, { repository_ref: '' }],
+        })
+        .sort({ published_at: 1, id: 1 })
+        .toArray()
+      let count = 0
+      for (const p of missing) {
+        const at = p.published_at || p.updated_at || p.created_at
+        const y = at ? new Date(at).getFullYear() : new Date().getFullYear()
+        const ref = await allocateResearchRepositoryRefForYear(y)
+        await researchPublications.updateOne(
+          { id: p.id },
+          { $set: { repository_ref: ref, updated_at: new Date().toISOString() } },
+        )
+        count += 1
+      }
+      return count
+    },
+
+    async fixMissingFacultyInformation() {
+      const missing = await users.find({ role: { $ne: 'student' } }).toArray()
+      let count = 0
+      for (const u of missing) {
+        if (!u.personal_information || Object.keys(u.personal_information).length === 0) {
+          if (u.full_name) {
+            const names = deriveStudentRootNames({}, u.full_name)
+            await users.updateOne(
+              { id: u.id },
+              {
+                $set: {
+                  personal_information: {
+                    first_name: names.first_name || '',
+                    middle_name: names.middle_name || '',
+                    last_name: names.last_name || '',
+                  },
+                  first_name: names.first_name || '',
+                  middle_name: names.middle_name || '',
+                  last_name: names.last_name || '',
+                }
+              }
+            )
+            count++
+          }
+        }
+      }
+      return count
+    },
+
+    /** Lightweight search for linking co-authors (students + faculty roles). Empty query returns a recent pool for dropdowns.
+     * When courseFilter is CS or IT, only students in that program are included; faculty/staff are always included. */
+    async searchUsersForResearchAuthors(query, limit = 20, courseFilter = null) {
+      const q = String(query || '').trim()
+      const roles = ['student', 'faculty', 'dean', 'department_chair', 'secretary', 'faculty_professor']
+      const staffRoles = ['faculty', 'dean', 'department_chair', 'secretary', 'faculty_professor']
+      const c = String(courseFilter || '').trim().toUpperCase()
+      const courseOk = c === 'CS' || c === 'IT'
+      const programAliases =
+        c === 'CS' ? ['CS', 'cs', 'BSCS', 'bscs'] : c === 'IT' ? ['IT', 'it', 'BSIT', 'bsit'] : []
+
+      const projection = {
+        _id: 0,
+        id: 1,
+        role: 1,
+        full_name: 1,
+        identifier: 1,
+        email: 1,
+        student_id: 1,
+        personal_information: 1,
+      }
+      const lim = Math.min(80, Math.max(10, Number(limit) || 20))
+
+      function authorScopeFilter(textSearch = null) {
+        const inRoles = { role: { $in: roles } }
+        if (!courseOk) {
+          return textSearch ? { $and: [inRoles, textSearch] } : inRoles
+        }
+        const studentMatchesCourse = {
+          role: 'student',
+          'academic_info.program': { $in: programAliases },
+        }
+        const courseScope = {
+          $or: [{ role: { $in: staffRoles } }, studentMatchesCourse],
+        }
+        return textSearch ? { $and: [inRoles, courseScope, textSearch] } : { $and: [inRoles, courseScope] }
+      }
+
+      let rows
+      if (q.length < 2) {
+        rows = await users
+          .find(authorScopeFilter(), { projection })
+          .sort({ full_name: 1 })
+          .limit(lim)
+          .toArray()
+      } else {
+        const esc = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        const re = new RegExp(esc, 'i')
+        const textSearch = {
+          $or: [{ full_name: re }, { identifier: re }, { email: re }, { student_id: re }],
+        }
+        rows = await users.find(authorScopeFilter(textSearch), { projection }).limit(lim).toArray()
+      }
+      return rows.map((u) => {
+        const pi = u.personal_information || {}
+        const dn =
+          String(u.full_name || '').trim() ||
+          [pi.first_name, pi.middle_name, pi.last_name].filter(Boolean).join(' ') ||
+          u.identifier ||
+          u.email ||
+          `User ${u.id}`
+        return {
+          id: u.id,
+          role: u.role,
+          displayName: dn,
+          studentId: u.student_id || (u.role === 'student' ? u.identifier : null),
+        }
+      })
+    },
+
+    async listFacultyForResearchAdviser(limit = 200) {
+      const roles = ['faculty', 'dean', 'department_chair', 'faculty_professor', 'secretary']
+      const rows = await users
+        .find(
+          { role: { $in: roles } },
+          { projection: { _id: 0, id: 1, role: 1, full_name: 1, identifier: 1, email: 1, personal_information: 1 } },
+        )
+        .limit(Number(limit) || 200)
+        .toArray()
+      return rows.map((u) => {
+        const pi = u.personal_information || {}
+        const dn =
+          String(u.full_name || '').trim() ||
+          [pi.first_name, pi.middle_name, pi.last_name].filter(Boolean).join(' ') ||
+          u.identifier ||
+          u.email ||
+          `User ${u.id}`
+        return { id: u.id, role: u.role, displayName: dn }
+      })
+    },
+
+    async getResearchAnalytics() {
+      const published = await researchPublications.find({ status: 'published' }).toArray()
+      const byYear = {}
+      const byCategory = {}
+      const adviserCounts = {}
+      const facultyAuthorCounts = {}
+      const FACULTY_ROLES = new Set(['faculty', 'dean', 'department_chair', 'faculty_professor', 'secretary'])
+
+      for (const p of published) {
+        const y = p.year ?? 'unknown'
+        byYear[y] = (byYear[y] || 0) + 1
+        const cat = String(p.category || 'Uncategorized').trim() || 'Uncategorized'
+        byCategory[cat] = (byCategory[cat] || 0) + 1
+        const adv = p.adviser_faculty_id
+        if (adv != null) {
+          adviserCounts[adv] = (adviserCounts[adv] || 0) + 1
+        }
+        const authors = Array.isArray(p.authors) ? p.authors : []
+        for (const a of authors) {
+          if (a?.user_id != null && FACULTY_ROLES.has(String(a.user_role || ''))) {
+            const uid = Number(a.user_id)
+            facultyAuthorCounts[uid] = (facultyAuthorCounts[uid] || 0) + 1
+          }
+        }
+      }
+
+      const pipeline = await researchPublications
+        .aggregate([
+          { $group: { _id: '$status', count: { $sum: 1 } } },
+        ])
+        .toArray()
+      const byStatus = Object.fromEntries(pipeline.map((x) => [x._id, x.count]))
+
+      const userIds = new Set([
+        ...Object.keys(adviserCounts).map(Number),
+        ...Object.keys(facultyAuthorCounts).map(Number),
+      ])
+      const idToName = {}
+      if (userIds.size > 0) {
+        const urows = await users
+          .find(
+            { id: { $in: [...userIds] } },
+            { projection: { _id: 0, id: 1, full_name: 1, identifier: 1, personal_information: 1 } },
+          )
+          .toArray()
+        for (const u of urows) {
+          const pi = u.personal_information || {}
+          idToName[u.id] =
+            String(u.full_name || '').trim() ||
+            [pi.first_name, pi.middle_name, pi.last_name].filter(Boolean).join(' ') ||
+            u.identifier ||
+            `User ${u.id}`
+        }
+      }
+
+      const mergeFacultyActivity = {}
+      for (const [idStr, c] of Object.entries(adviserCounts)) {
+        const id = Number(idStr)
+        mergeFacultyActivity[id] = (mergeFacultyActivity[id] || 0) + c
+      }
+      for (const [idStr, c] of Object.entries(facultyAuthorCounts)) {
+        const id = Number(idStr)
+        mergeFacultyActivity[id] = (mergeFacultyActivity[id] || 0) + c
+      }
+      const mostActiveFaculty = Object.entries(mergeFacultyActivity)
+        .map(([userId, count]) => ({
+          userId: Number(userId),
+          displayName: idToName[userId] || `User ${userId}`,
+          count,
+        }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 12)
+
+      return {
+        totalPublished: published.length,
+        byYear,
+        byCategory,
+        byStatus,
+        mostActiveFaculty,
+      }
+    },
 
   }
 }

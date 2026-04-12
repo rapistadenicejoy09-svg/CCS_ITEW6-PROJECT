@@ -1,6 +1,5 @@
 import { useState, useMemo, useEffect, useCallback } from 'react'
-import { Link } from 'react-router-dom'
-import { apiAdminLogs } from '../lib/api'
+import { apiAdminLogs, apiMeLogs } from '../lib/api'
 
 function getRole() {
   try {
@@ -78,10 +77,11 @@ function getLogIcon(type) {
   const t = String(type || '').toLowerCase()
   if (t === 'create') return <IconUser />
   if (t === 'access') return <IconShield />
+  if (t === 'security') return <IconShield />
   return <IconActivity />
 }
 
-export default function AdminActivityLog() {
+export default function ActivityLog() {
   const [logs, setLogs] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -95,7 +95,7 @@ export default function AdminActivityLog() {
     const token = localStorage.getItem('authToken')
     if (!token) return
     try {
-      const res = await apiAdminLogs(token)
+      const res = isAdmin ? await apiAdminLogs(token) : await apiMeLogs(token)
       if (res.ok) {
         setLogs(res.logs || [])
         setError(null)
@@ -111,11 +111,10 @@ export default function AdminActivityLog() {
   }, [])
 
   useEffect(() => {
-    if (!isAdmin) return
     loadLogs()
     const interval = setInterval(loadLogs, 5000) // Poll every 5s
     return () => clearInterval(interval)
-  }, [isAdmin, loadLogs])
+  }, [loadLogs])
 
   const filteredLogs = useMemo(() => {
     let result = logs
@@ -127,13 +126,14 @@ export default function AdminActivityLog() {
       result = result.filter(log =>
         String(log.action || '').toLowerCase().includes(q) ||
         String(log.details || '').toLowerCase().includes(q) ||
-        String(log.user_id || '').toLowerCase().includes(q)
+        String(log.user_id || '').toLowerCase().includes(q) ||
+        String(log.user_name || '').toLowerCase().includes(q)
       )
     }
     return result
   }, [logs, filter, search])
 
-  if (!isAdmin) return <div className="p-8 text-center text-[var(--text-muted)]">Administrators only.</div>
+
 
   return (
     <div className="module-page">
@@ -142,13 +142,12 @@ export default function AdminActivityLog() {
         <header className="flex flex-col md:flex-row justify-between items-start md:items-center animate-reveal">
           <div>
             <h1 className="main-title font-extrabold text-[var(--text)] flex items-center gap-3">
-              <IconActivity /> Activity Log
+              <IconActivity /> {isAdmin ? 'System Activity Log' : 'My Activity Log'}
             </h1>
             <p className="main-description text-[var(--text-muted)] mt-1">
-              Audit trail of administrative actions and system events.
+              {isAdmin ? 'Audit trail of administrative actions and system events.' : 'View your recent actions and system events securely.'}
             </p>
           </div>
-          <Link to="/admin/faculty" className="btn btn-secondary mt-4 md:mt-0">← Directory</Link>
         </header>
 
         <section className="bg-[var(--card-bg)] border border-[var(--border-color)] rounded-[var(--radius-lg)] p-5 md:p-6 shadow-sm animate-reveal" style={{ animationDelay: '0.1s' }}>
@@ -186,6 +185,7 @@ export default function AdminActivityLog() {
                   <option value="update">Modifications</option>
                   <option value="delete">Deletions</option>
                   <option value="access">Access Logs</option>
+                  <option value="security">Security / Admin provisioning</option>
                 </select>
                 <div className="absolute inset-y-0 right-4 flex items-center pointer-events-none text-[var(--text-muted)]">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6" /></svg>
@@ -218,6 +218,7 @@ export default function AdminActivityLog() {
                 <thead>
                   <tr className="bg-[rgba(0,0,0,0.02)] dark:bg-[rgba(255,255,255,0.03)] border-b border-[var(--border-color)]">
                     <th className="px-6 py-4 text-[10px] font-bold uppercase tracking-widest text-[var(--text-muted)]">User</th>
+                    <th className="px-6 py-4 text-[10px] font-bold uppercase tracking-widest text-[var(--text-muted)]">Role</th>
                     <th className="px-6 py-4 text-[10px] font-bold uppercase tracking-widest text-[var(--text-muted)]">Activity</th>
                     <th className="px-6 py-4 text-[10px] font-bold uppercase tracking-widest text-[var(--text-muted)]">Category</th>
                     <th className="px-6 py-4 text-[10px] font-bold uppercase tracking-widest text-[var(--text-muted)]">Date & Time</th>
@@ -263,6 +264,21 @@ export default function AdminActivityLog() {
                             </div>
                           </div>
                         </td>
+                        <td className="px-6 py-5">
+                          <span className={`px-2 py-1 rounded text-[10px] font-bold uppercase tracking-wider ${
+                            log.user_role === 'admin' ? 'bg-amber-500/10 text-amber-500' :
+                            log.user_role === 'dean' ? 'bg-fuchsia-500/10 text-fuchsia-500' :
+                            log.user_role === 'student' ? 'bg-sky-500/10 text-sky-500' :
+                            log.user_role === 'faculty_professor' ? 'bg-indigo-500/10 text-indigo-500' :
+                            log.user_role === 'secretary' ? 'bg-teal-500/10 text-teal-500' :
+                            log.user_role === 'department_chair' ? 'bg-orange-500/10 text-orange-500' :
+                            'bg-slate-500/10 text-slate-500'
+                          }`}>
+                            {log.user_role === 'faculty_professor' ? 'Professor' :
+                             log.user_role === 'department_chair' ? 'Chair' :
+                             log.user_role || 'System'}
+                          </span>
+                        </td>
                         <td className="px-6 py-5 text-sm font-semibold text-[var(--text)]">
                           {log.action}
                         </td>
@@ -270,6 +286,7 @@ export default function AdminActivityLog() {
                           <span className={`px-2.5 py-1 rounded-full text-[9px] font-bold uppercase tracking-wider ${String(log.type).toLowerCase() === 'create' ? 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20' :
                             String(log.type).toLowerCase() === 'update' ? 'bg-blue-500/10 text-blue-500 border border-blue-500/20' :
                               String(log.type).toLowerCase() === 'delete' ? 'bg-rose-500/10 text-rose-500 border border-rose-500/20' :
+                                String(log.type).toLowerCase() === 'security' ? 'bg-violet-500/10 text-violet-600 border border-violet-500/25' :
                                 'bg-slate-500/10 text-slate-500 border border-slate-500/20'
                             }`}>
                             {log.type}

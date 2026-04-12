@@ -27,7 +27,8 @@ export default function FacultyProfile() {
   const [imageUrl, setImageUrl] = useState('')
   const [saving, setSaving] = useState(false)
   const [saveMsg, setSaveMsg] = useState('')
-  
+  const [bioMsg, setBioMsg] = useState('')
+
   const [roleDraft, setRoleDraft] = useState('')
   const [isActiveDraft, setIsActiveDraft] = useState(true)
 
@@ -45,6 +46,8 @@ export default function FacultyProfile() {
   const [pwdMsg, setPwdMsg] = useState('')
   const [pwdError, setPwdError] = useState('')
   const [pwdSaving, setPwdSaving] = useState(false)
+
+  const [bioDraft, setBioDraft] = useState('')
 
   const currentUserRole = getRole()
   const isAdmin = currentUserRole === 'admin'
@@ -67,6 +70,7 @@ export default function FacultyProfile() {
       }
       setProfile(p)
       setImageUrl(p?.profileImageUrl || '')
+      setBioDraft(p?.bio || '')
       setRoleDraft(p?.role || '')
       setIsActiveDraft(p?.is_active !== 0)
     } catch (e) {
@@ -116,6 +120,23 @@ export default function FacultyProfile() {
       setPwdError(err?.message || 'Could not change password.')
     } finally {
       setPwdSaving(false)
+    }
+  }
+
+  async function handleSaveBio(e) {
+    e.preventDefault()
+    const token = localStorage.getItem('authToken')
+    if (!token) return
+    setSaving(true)
+    setBioMsg('')
+    try {
+      const res = await apiPatchAccountProfile(token, { bio: bioDraft.trim() })
+      setProfile(res?.profile)
+      setBioMsg('Biography updated successfully.')
+    } catch (err) {
+      setBioMsg(err?.message || 'Could not save biography.')
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -224,15 +245,15 @@ export default function FacultyProfile() {
         <h1 className="profile-hero-title">{displayName}</h1>
         <p className="profile-hero-subtitle">
           {profile?.role === 'dean' ? 'College Dean' :
-           profile?.role === 'department_chair' ? 'Department Chair' :
-           profile?.role === 'secretary' ? 'College Secretary' :
-           profile?.role === 'faculty_professor' ? 'Professor' : 'Professional Educator'}
+            profile?.role === 'department_chair' ? 'Department Chair' :
+              profile?.role === 'secretary' ? 'College Secretary' :
+                profile?.role === 'faculty_professor' ? 'Professor' : 'Professional Educator'}
         </p>
 
         <div className="faculty-stats">
           <div className="faculty-stat">
             <span className="faculty-stat-label">Specialization</span>
-            <span className="faculty-stat-value">{s.specialization || '—'}</span>
+            <span className="faculty-stat-value">{profile?.specialization || '—'}</span>
           </div>
           <div className="faculty-stat-divider" />
           <div className="faculty-stat">
@@ -242,7 +263,7 @@ export default function FacultyProfile() {
           <div className="faculty-stat-divider" />
           <div className="faculty-stat">
             <span className="faculty-stat-label">Department</span>
-            <span className="faculty-stat-value">{s.department || '—'}</span>
+            <span className="faculty-stat-value">{profile?.department || '—'}</span>
           </div>
         </div>
       </div>
@@ -255,8 +276,46 @@ export default function FacultyProfile() {
             <li><strong>Middle name:</strong> {middleName}</li>
             <li><strong>Last name:</strong> {lastName}</li>
             <li><strong>Email:</strong> {profile?.email || '—'}</li>
+            <li><strong>Phone Number:</strong> {profile?.personal_information?.phone_number || '—'}</li>
+            <li><strong>Date of Birth:</strong> {profile?.personal_information?.date_of_birth || '—'}</li>
+            <li><strong>Gender:</strong> {profile?.personal_information?.gender || '—'}</li>
             <li><strong>Rank:</strong> Assistant Professor</li>
           </ul>
+        </div>
+
+        <div className="profile-card profile-card-faculty lg:col-span-1">
+          <h3 className="profile-card-title">Biography / Description</h3>
+          <p className="text-xs text-[var(--text-muted)] mb-4">Professional background and research interests.</p>
+          <form onSubmit={handleSaveBio} className="auth-form">
+            <textarea
+              className="search-input w-full min-h-[150px] p-3 text-sm mb-3"
+              value={bioDraft}
+              onChange={e => {
+                setBioDraft(e.target.value)
+                if (bioMsg) setBioMsg('')
+              }}
+              placeholder="Enter your biography here..."
+              style={{ resize: 'vertical', borderRadius: '12px' }}
+            />
+            <button
+              type="submit"
+              className="btn btn-primary w-full"
+              disabled={saving || bioDraft.trim() === (profile?.bio || '').trim()}
+            >
+              {saving ? 'Saving...' : 'Save Biography'}
+            </button>
+            {bioMsg && (
+              <p style={{
+                fontSize: '11px',
+                color: bioMsg.includes('successfully') ? '#10b981' : '#ef4444',
+                marginTop: '10px',
+                textAlign: 'center',
+                fontWeight: '500'
+              }}>
+                {bioMsg}
+              </p>
+            )}
+          </form>
         </div>
 
         <div className="profile-card profile-card-faculty">

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState, useCallback } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import SuccessModal from '../components/SuccessModal'
-import { apiAdminPatchUser, apiAdminStudents, apiLogin } from '../lib/api'
+import ConfirmDeleteModal from '../components/ConfirmDeleteModal'
+import { apiAdminPatchUser, apiAdminStudents } from '../lib/api'
 
 function getRole() {
   try {
@@ -108,29 +109,7 @@ export default function AdminStudentList() {
   const [viewMode, setViewMode] = useState('grid')
 
   const [deleteTarget, setDeleteTarget] = useState(null)
-  const [deletePassword, setDeletePassword] = useState('')
-  const [deleteTwoFACode, setDeleteTwoFACode] = useState('')
-  const [deleteNeeds2FA, setDeleteNeeds2FA] = useState(false)
-  const [deleteModalError, setDeleteModalError] = useState('')
-  const [deleteSubmitting, setDeleteSubmitting] = useState(false)
-  const [deleteRemoveCooldown, setDeleteRemoveCooldown] = useState(0)
-
   const isAdmin = getRole() === 'admin'
-
-  useEffect(() => {
-    if (!deleteTarget) {
-      setDeleteRemoveCooldown(0)
-      return
-    }
-    setDeleteRemoveCooldown(3)
-    let remaining = 3
-    const id = setInterval(() => {
-      remaining -= 1
-      setDeleteRemoveCooldown(Math.max(0, remaining))
-      if (remaining <= 0) clearInterval(id)
-    }, 1000)
-    return () => clearInterval(id)
-  }, [deleteTarget])
 
   const loadStudents = useCallback(async () => {
     const token = localStorage.getItem('authToken')
@@ -148,7 +127,6 @@ export default function AdminStudentList() {
       if (filterAffiliation.trim()) query.affiliation = filterAffiliation.trim()
       const result = await apiAdminStudents(token, query)
       const rawStudents = Array.isArray(result?.students) ? result.students : []
-      // Filter out soft-deleted students for UI parity with Delete Action
       setStudents(rawStudents.filter(isUserActive))
     } catch (err) {
       setError(err?.message || 'Failed to load students.')
@@ -179,67 +157,27 @@ export default function AdminStudentList() {
 
   function closeDeleteModal() {
     setDeleteTarget(null)
-    setDeletePassword('')
-    setDeleteTwoFACode('')
-    setDeleteNeeds2FA(false)
-    setDeleteModalError('')
   }
 
   async function verifyPasswordAndDelete() {
-    const student = deleteTarget
-    if (!student || !isUserActive(student)) {
+    const target = deleteTarget
+    if (!target || !isUserActive(target)) {
       closeDeleteModal()
       return
     }
-    const adminId = getAdminLoginIdentifier()
-    if (!adminId) {
-      setDeleteModalError('Could not determine your account. Sign in again.')
-      return
-    }
-    if (!deletePassword.trim()) {
-      setDeleteModalError('Enter your password to confirm.')
-      return
-    }
-    if (deleteNeeds2FA && deleteTwoFACode.trim().length !== 6) {
-      setDeleteModalError('Enter your 6-digit authenticator or backup code.')
-      return
-    }
-
     const token = localStorage.getItem('authToken')
-    if (!token) {
-      setDeleteModalError('Missing auth token.')
-      return
-    }
+    if (!token) throw new Error('Missing auth token.')
 
-    setDeleteModalError('')
-    setDeleteSubmitting(true)
     try {
-      try {
-        await apiLogin({
-          identifier: adminId,
-          password: deletePassword,
-          twoFACode: deleteNeeds2FA ? deleteTwoFACode.trim() : undefined,
-        })
-      } catch (loginErr) {
-        const msg = loginErr?.data?.error || loginErr?.message || ''
-        if (msg === 'Two-factor required' && !deleteNeeds2FA) {
-          setDeleteNeeds2FA(true)
-          setDeleteModalError('Two-factor authentication is enabled. Enter your 6-digit code from your authenticator app or your backup code.')
-          return
-        }
-        setDeleteModalError(
-          loginErr?.message || 'Password verification failed. Check your credentials and try again.',
-        )
-        return
-      }
-
-      await apiAdminPatchUser(token, student.id, { isActive: false })
+      await apiAdminPatchUser(token, target.id, { isActive: false })
       closeDeleteModal()
       await loadStudents()
+      setSuccessModal({
+        open: true,
+        message: `${target.full_name || displayStudentId(target)}'s profile has been deactivated.`,
+      })
     } catch (err) {
-      setError(err?.message || 'Failed to delete student.')
-    } finally {
-      setDeleteSubmitting(false)
+      throw new Error(err?.message || 'Failed to deactivate student profile.')
     }
   }
 
@@ -289,7 +227,6 @@ export default function AdminStudentList() {
     <div className="module-page">
       <div className="w-full space-y-6">
         
-        {/* Header Section */}
         <header className="module-header flex flex-col md:flex-row justify-between items-start md:items-center admin-student-list-header-enter">
           <div>
             <h1 className="main-title font-extrabold text-[var(--text)]">
@@ -317,7 +254,6 @@ export default function AdminStudentList() {
           </div>
         )}
 
-        {/* Filters and Search Bar Section */}
         <section className="bg-[var(--card-bg)] border border-[var(--border-color)] rounded-[var(--radius-lg)] p-5 md:p-6 shadow-sm admin-student-list-toolbar-enter">
           <div className="flex flex-col md:flex-row gap-4 items-center">
             
@@ -332,7 +268,6 @@ export default function AdminStudentList() {
             </div>
             
             <div className="flex items-center gap-3 w-full md:w-auto">
-              {/* Filter Display Toggle */}
               <button 
                 onClick={() => setShowFilters(!showFilters)}
                 className={`btn flex items-center gap-2 ${showFilters || hasActiveFilters ? 'btn-primary' : 'btn-secondary'}`}
@@ -343,7 +278,6 @@ export default function AdminStudentList() {
                 )}
               </button>
               
-              {/* View Toggle */}
               <div className="flex items-center gap-1">
                 <button
                   onClick={() => setViewMode('list')}
@@ -434,7 +368,6 @@ export default function AdminStudentList() {
           )}
         </section>
 
-        {/* Results */}
         <section className="space-y-4 admin-student-list-section-enter">
           <h2 className="text-xl font-bold px-1 flex items-center gap-2 text-[var(--text)]">
             <span className="w-6 h-[2px] bg-[var(--accent)]"></span>
@@ -456,19 +389,16 @@ export default function AdminStudentList() {
             </div>
           ) : (
             <>
-              {/* GRID VIEW */}
               {viewMode === 'grid' && (
                 <div className="admin-student-card-grid grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
                   {filteredStudents.map((student, idx) => {
                     const active = isUserActive(student)
-                    const busy = deleteSubmitting && deleteTarget?.id === student.id
                     return (
                       <div
                         key={student.id}
                         className="admin-student-card group flex flex-col bg-[var(--card-bg)] border border-[var(--border-color)] hover:border-[var(--accent)] rounded-[var(--radius-md)] overflow-hidden admin-student-card-animate"
                         style={{ animationDelay: `${Math.min(idx, 14) * 0.055}s` }}
                       >
-                        {/* Card Header */}
                         <div className="p-5 pb-3 border-b border-[var(--border-color)] flex justify-between items-start">
                           <div>
                             <h3 className="text-base font-bold text-[var(--text)] mb-0.5 leading-tight">{student.full_name || 'Unnamed Student'}</h3>
@@ -479,10 +409,8 @@ export default function AdminStudentList() {
                           </span>
                         </div>
 
-                        {/* Card Body */}
                         <div className="p-5 flex-1 flex flex-col gap-5 text-sm">
                           <div className="flex flex-col gap-4">
-                            {/* Academic Details Snippet */}
                             <div className="flex flex-col">
                               <p className="text-[var(--text-muted)] text-[10px] uppercase font-bold mb-1 tracking-wider">Academic Info</p>
                               <p className="text-[var(--text)] text-sm font-bold leading-snug">{student.academic_info?.program || '—'}</p>
@@ -497,7 +425,6 @@ export default function AdminStudentList() {
                               </div>
                             </div>
 
-                            {/* Enrollment Status */}
                             <div>
                                <p className="text-[var(--text-muted)] text-[10px] uppercase font-bold mb-1 tracking-wider">Enrollment</p>
                                <span className={`px-2.5 py-1 rounded text-[10px] font-bold uppercase tracking-wider inline-block ${
@@ -511,7 +438,6 @@ export default function AdminStudentList() {
                                </span>
                             </div>
 
-                            {/* Affiliations Snippet */}
                             <div>
                               <p className="text-[var(--text-muted)] text-[10px] uppercase font-bold mb-1 tracking-wider">Top Affiliation</p>
                               {student.affiliations && student.affiliations.length > 0 ? (
@@ -529,7 +455,6 @@ export default function AdminStudentList() {
                             </div>
                           </div>
 
-                          {/* Skills Tags */}
                           {student.skills && Array.isArray(student.skills) && student.skills.length > 0 && (
                             <div className="mt-auto pt-4 border-t border-[rgba(0,0,0,0.04)] dark:border-[rgba(255,255,255,0.04)]">
                               <p className="text-[var(--text-muted)] text-[10px] uppercase font-bold mb-2 tracking-wider">Skills</p>
@@ -552,14 +477,8 @@ export default function AdminStudentList() {
                             type="button"
                             className="flex items-center justify-center px-3 py-1.5 bg-rose-50/50 text-rose-600 hover:bg-rose-100 hover:text-rose-700 rounded-lg border border-rose-200 hover:border-rose-400 transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed"
                             title="Delete Student"
-                            disabled={!active || busy}
-                            onClick={() => {
-                              setDeleteTarget(student)
-                              setDeletePassword('')
-                              setDeleteTwoFACode('')
-                              setDeleteNeeds2FA(false)
-                              setDeleteModalError('')
-                            }}
+                            disabled={!active}
+                            onClick={() => setDeleteTarget(student)}
                           >
                              <IconTrash />
                           </button>
@@ -576,7 +495,6 @@ export default function AdminStudentList() {
                 </div>
               )}
 
-              {/* LIST VIEW */}
               {viewMode === 'list' && (
                 <div className="bg-[var(--card-bg)] border border-[var(--border-color)] rounded-[var(--radius-lg)] overflow-hidden shadow-sm transition-shadow duration-300 hover:shadow-md">
                   <div className="overflow-x-auto">
@@ -594,7 +512,6 @@ export default function AdminStudentList() {
                       <tbody className="divide-y divide-[var(--border-color)]">
                         {filteredStudents.map((student, idx) => {
                           const active = isUserActive(student)
-                          const busy = deleteSubmitting && deleteTarget?.id === student.id
                           return (
                             <tr
                               key={student.id}
@@ -677,14 +594,8 @@ export default function AdminStudentList() {
                                       type="button"
                                       className="flex items-center justify-center px-4 py-2 bg-rose-50/50 text-rose-600 hover:bg-rose-100 hover:text-rose-700 rounded-lg border border-rose-200 hover:border-rose-400 transition-all duration-200 disabled:opacity-30 disabled:cursor-not-allowed"
                                       title="Delete Student"
-                                      disabled={!active || busy}
-                                      onClick={() => {
-                                        setDeleteTarget(student)
-                                        setDeletePassword('')
-                                        setDeleteTwoFACode('')
-                                        setDeleteNeeds2FA(false)
-                                        setDeleteModalError('')
-                                      }}
+                                      disabled={!active}
+                                      onClick={() => setDeleteTarget(student)}
                                     >
                                        <IconTrash />
                                     </button>
@@ -718,104 +629,22 @@ export default function AdminStudentList() {
       />
 
       {deleteTarget && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-          <button
-            type="button"
-            className="absolute inset-0 bg-black/40 backdrop-blur-[2px]"
-            aria-label="Close dialog"
-            onClick={() => !deleteSubmitting && closeDeleteModal()}
-          />
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="delete-student-title"
-            className="admin-delete-modal-content relative bg-[var(--card-bg)] border border-[var(--border-color)] rounded-[var(--radius-lg)] p-7 max-w-md w-full shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex flex-col">
-              <div className="flex flex-col items-center text-center mb-4">
-                <div className="w-14 h-14 rounded-full bg-rose-500/15 text-rose-600 dark:text-rose-400 flex items-center justify-center mb-4 ring-4 ring-rose-500/10">
-                  <IconTrash />
-                </div>
-                <h2 id="delete-student-title" className="text-xl font-bold text-[var(--text)] mb-2">
-                  Remove student profile?
-                </h2>
-                <p className="text-sm text-[var(--text-muted)] leading-relaxed">
-                  This deactivates{' '}
-                  <span className="font-semibold text-[var(--text)]">
-                    {deleteTarget.full_name || displayStudentId(deleteTarget)}
-                  </span>
-                  . They will no longer be able to sign in. Enter your administrator password to confirm.
-                </p>
-              </div>
-
-              <label className="block text-[11px] font-bold uppercase tracking-wider text-[var(--text-muted)] mb-1.5">
-                Your password
-              </label>
-              <input
-                type="password"
-                autoComplete="current-password"
-                value={deletePassword}
-                onChange={(e) => setDeletePassword(e.target.value)}
-                className="search-input w-full mb-4"
-                placeholder="Administrator password"
-                disabled={deleteSubmitting}
-              />
-
-              {deleteNeeds2FA && (
-                <>
-                  <label className="block text-[11px] font-bold uppercase tracking-wider text-[var(--text-muted)] mb-1.5">
-                    Two-factor code
-                  </label>
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    autoComplete="one-time-code"
-                    maxLength={6}
-                    value={deleteTwoFACode}
-                    onChange={(e) => setDeleteTwoFACode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                    className="search-input w-full mb-4 font-mono tracking-widest"
-                    placeholder="000000"
-                    disabled={deleteSubmitting}
-                  />
-                </>
-              )}
-
-              {deleteModalError && (
-                <p className="text-sm text-rose-600 dark:text-rose-400 mb-4 text-center">{deleteModalError}</p>
-              )}
-
-              <p className="text-[11px] text-center text-[var(--text-muted)] mb-3">
-                {deleteRemoveCooldown > 0
-                  ? `The remove action unlocks in ${deleteRemoveCooldown}s so you can review the details above.`
-                  : 'You can confirm removal when your password (and 2FA, if required) are entered.'}
-              </p>
-
-              <div className="flex w-full gap-3 mt-2">
-                <button
-                  type="button"
-                  onClick={closeDeleteModal}
-                  disabled={deleteSubmitting}
-                  className="flex-1 px-4 py-3 text-sm font-semibold text-[var(--text-muted)] hover:text-[var(--text)] bg-transparent hover:bg-[var(--border-color)]/30 border border-[var(--border-color)] rounded-xl transition-all duration-200 disabled:opacity-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={verifyPasswordAndDelete}
-                  disabled={deleteSubmitting || deleteRemoveCooldown > 0}
-                  className="flex-1 px-4 py-3 text-sm font-semibold bg-rose-600 text-white rounded-xl hover:bg-rose-700 shadow-lg shadow-rose-600/20 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-rose-600"
-                >
-                  {deleteSubmitting
-                    ? 'Working…'
-                    : deleteRemoveCooldown > 0
-                      ? `Remove student (${deleteRemoveCooldown}s)`
-                      : 'Remove student'}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+        <ConfirmDeleteModal
+          title="Remove student profile?"
+          description={
+            <p className="leading-relaxed">
+              This deactivates{' '}
+              <span className="font-semibold text-[var(--text)]">
+                {deleteTarget.full_name || displayStudentId(deleteTarget)}
+              </span>
+              . They will no longer be able to sign in. Enter your administrator password to confirm.
+            </p>
+          }
+          confirmLabel="Confirm Deletion"
+          adminIdentifier={getAdminLoginIdentifier()}
+          onConfirm={verifyPasswordAndDelete}
+          onClose={closeDeleteModal}
+        />
       )}
     </div>
   )
