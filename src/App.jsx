@@ -25,6 +25,7 @@ import StudentLogin from './pages/StudentLogin'
 import FacultyLogin from './pages/FacultyLogin'
 import FacultyRegister from './pages/FacultyRegister'
 import CollegeResearch from './pages/CollegeResearch'
+import AdminEventList from './pages/AdminEventList'
 import { canAccessPath } from './lib/security'
 import './App.css'
 
@@ -97,7 +98,7 @@ export default function App() {
             <Route path="faculty/evaluations" element={<FacultyEvaluations />} />
             <Route path="faculty/consultation" element={<FacultyConsultation />} />
             <Route path="faculty/subjects" element={<FacultySubjects />} />
-            <Route path="events" element={<ModulePage />} />
+            <Route path="events" element={<AdminEventList />} />
             <Route path="scheduling" element={<ModulePage />} />
             <Route path="college-research" element={<CollegeResearch />} />
             <Route path="instructions" element={<ModulePage />} />

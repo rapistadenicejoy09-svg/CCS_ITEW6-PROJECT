@@ -74,6 +74,7 @@ export async function openMongoStore() {
   const evaluations = db.collection('evaluations')
   const logs = db.collection('logs')
   const researchPublications = db.collection('research_publications')
+  const events = db.collection('events')
 
   // Ensure uniqueness constraints for user identity and sessions.
   await Promise.all([
@@ -116,6 +117,10 @@ export async function openMongoStore() {
       { submission_ref: 1 },
       { unique: true, sparse: true, name: 'research_publications_submission_ref_unique' },
     ),
+    events.createIndex({ id: 1 }, { unique: true, name: 'events_id_unique' }),
+    events.createIndex({ type: 1 }),
+    events.createIndex({ department: 1 }),
+    events.createIndex({ start_time: 1 }),
   ])
 
     async function nextId(collectionName) {
@@ -919,7 +924,6 @@ export async function openMongoStore() {
         }
         await logs.insertOne(doc)
         console.log(`[LOG CREATED] ${action} (${type}) for User ${userName || userId}`)
-        return doc
       } catch (err) {
         console.error(`[LOG ERROR] Failed to create log ${action}:`, err)
         return null
@@ -1229,6 +1233,57 @@ export async function openMongoStore() {
         mostActiveFaculty,
       }
     },
+    // Events
+    async listEvents(query = {}) {
+      const filter = {}
+      if (query.type) filter.type = query.type
+      if (query.department) filter.department = query.department
+      if (query.status) filter.status = query.status
+      if (query.visibility) filter.visibility = query.visibility
+      
+      return await events.find(filter).sort({ start_time: 1 }).toArray()
+    },
+
+    async getEventById(id) {
+      return await events.findOne({ id: Number(id) })
+    },
+
+    async createEvent(data) {
+      const id = await nextId('events')
+      const doc = {
+        id,
+        ...data,
+        status: data.status || 'pending',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      }
+      await events.insertOne(doc)
+      return doc
+    },
+
+    async updateEvent(id, updates) {
+      const upd = { ...updates, updated_at: new Date().toISOString() }
+      await events.updateOne({ id: Number(id) }, { $set: upd })
+      return await events.findOne({ id: Number(id) })
+    },
+
+    async deleteEvent(id) {
+      await events.deleteOne({ id: Number(id) })
+    },
+
+    async approveEvent(id, approvedBy) {
+      await events.updateOne(
+        { id: Number(id) },
+        { 
+          $set: { 
+            status: 'approved', 
+            approved_by: approvedBy,
+            updated_at: new Date().toISOString() 
+          } 
+        }
+      )
+      return await events.findOne({ id: Number(id) })
+    }
 
   }
 }

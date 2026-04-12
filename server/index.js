@@ -1607,6 +1607,111 @@ app.patch('/api/faculty/profile', authMiddleware, authorize(PERMISSIONS.FACULTY_
   res.json({ ok: true, profile: p })
 }))
 
+// --- Events Module API ---
+
+app.get('/api/events', authMiddleware, authorize(PERMISSIONS.EVENTS_VIEW), asyncHandler(async (req, res) => {
+  const query = req.query || {}
+  const list = await store.listEvents(query)
+  
+  // Apply visibility filters based on user role/dept if not admin
+  const filtered = list.filter(event => {
+    if (req.user.role === 'admin') return true
+    if (event.visibility === 'public') return true
+    if (event.target_audience === 'all') return true
+    if (event.target_audience === req.user.role) return true
+    if (event.department && event.department === req.user.department) return true
+    return false
+  })
+  
+  res.json({ ok: true, events: filtered })
+}))
+
+app.get('/api/events/:id', authMiddleware, authorize(PERMISSIONS.EVENTS_VIEW), asyncHandler(async (req, res) => {
+  const id = Number(req.params.id)
+  const event = await store.getEventById(id)
+  if (!event) return res.status(404).json({ error: 'Event not found' })
+  res.json({ ok: true, event })
+}))
+
+app.post('/api/events', authMiddleware, authorize(PERMISSIONS.EVENTS_MANAGE), asyncHandler(async (req, res) => {
+  const { title, date_time } = req.body
+  if (!title) return res.status(400).json({ error: 'Event title is required' })
+  
+  const event = await store.createEvent({
+    ...req.body,
+    created_by: req.user.id,
+    status: req.user.role === 'admin' ? 'approved' : 'pending'
+  })
+  
+  await store.createLog({
+    type: 'CREATE',
+    action: 'Event Created',
+    details: `Event "${title}" created by ${req.user.full_name || req.user.identifier}`,
+    userId: req.user.id,
+    userName: req.user.full_name || req.user.identifier,
+    userIp: req.ip
+  })
+  
+  res.status(201).json({ ok: true, event })
+}))
+
+app.patch('/api/events/:id', authMiddleware, authorize(PERMISSIONS.EVENTS_MANAGE), asyncHandler(async (req, res) => {
+  const id = Number(req.params.id)
+  const target = await store.getEventById(id)
+  if (!target) return res.status(404).json({ error: 'Event not found' })
+  
+  const updated = await store.updateEvent(id, req.body)
+  
+  await store.createLog({
+    type: 'UPDATE',
+    action: 'Event Updated',
+    details: `Event "${target.title}" updated by ${req.user.full_name || req.user.identifier}`,
+    userId: req.user.id,
+    userName: req.user.full_name || req.user.identifier,
+    userIp: req.ip
+  })
+  
+  res.json({ ok: true, event: updated })
+}))
+
+app.delete('/api/events/:id', authMiddleware, authorize(PERMISSIONS.EVENTS_MANAGE), asyncHandler(async (req, res) => {
+  const id = Number(req.params.id)
+  const target = await store.getEventById(id)
+  if (!target) return res.status(404).json({ error: 'Event not found' })
+  
+  await store.deleteEvent(id)
+  
+  await store.createLog({
+    type: 'DELETE',
+    action: 'Event Deleted',
+    details: `Event "${target.title}" deleted by ${req.user.full_name || req.user.identifier}`,
+    userId: req.user.id,
+    userName: req.user.full_name || req.user.identifier,
+    userIp: req.ip
+  })
+  
+  res.json({ ok: true })
+}))
+
+app.patch('/api/events/:id/approve', authMiddleware, authorize(PERMISSIONS.EVENTS_MANAGE), asyncHandler(async (req, res) => {
+  const id = Number(req.params.id)
+  const target = await store.getEventById(id)
+  if (!target) return res.status(404).json({ error: 'Event not found' })
+  
+  const updated = await store.approveEvent(id, req.user.id)
+  
+  await store.createLog({
+    type: 'UPDATE',
+    action: 'Event Approved',
+    details: `Event "${target.title}" approved by ${req.user.full_name || req.user.identifier}`,
+    userId: req.user.id,
+    userName: req.user.full_name || req.user.identifier,
+    userIp: req.ip
+  })
+  
+  res.json({ ok: true, event: updated })
+}))
+
 app.use((err, req, res, _next) => {
   // eslint-disable-next-line no-console
   console.error('Unhandled API error:', err)
