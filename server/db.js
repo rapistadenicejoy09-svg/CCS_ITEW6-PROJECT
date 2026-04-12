@@ -40,6 +40,20 @@ export function initDb(db) {
       expires_at TEXT NOT NULL,
       FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS instructions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      type TEXT NOT NULL,
+      title TEXT NOT NULL,
+      course TEXT,
+      subject TEXT,
+      description TEXT,
+      status TEXT NOT NULL,
+      author TEXT,
+      link TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `)
 
   // Apply schema migrations

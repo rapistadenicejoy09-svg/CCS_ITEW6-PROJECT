@@ -151,6 +151,35 @@ export function openSqliteStore() {
         )
         .get(id)
     },
+
+    listInstructions() {
+      return db.prepare('SELECT * FROM instructions ORDER BY id DESC').all()
+    },
+
+    getInstructionById(id) {
+      return db.prepare('SELECT * FROM instructions WHERE id = ?').get(id)
+    },
+
+    createInstruction(data) {
+      const stmt = db.prepare(`
+        INSERT INTO instructions (type, title, course, subject, description, status, author, link, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      const info = stmt.run(data.type, data.title, data.course, data.subject, data.description, data.status, data.author, data.link, data.created_at, data.updated_at)
+      return info.lastInsertRowid
+    },
+
+    updateInstruction(id, data) {
+      const stmt = db.prepare(`
+        UPDATE instructions SET type = ?, title = ?, course = ?, subject = ?, description = ?, status = ?, author = ?, link = ?, updated_at = ?
+        WHERE id = ?
+      `)
+      stmt.run(data.type, data.title, data.course, data.subject, data.description, data.status, data.author, data.link, data.updated_at, id)
+    },
+
+    deleteInstruction(id) {
+      db.prepare('DELETE FROM instructions WHERE id = ?').run(id)
+    },
   }
 }
 

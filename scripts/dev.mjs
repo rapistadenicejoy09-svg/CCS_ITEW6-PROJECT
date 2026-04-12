@@ -48,7 +48,7 @@ loadEnvFile()
 
 const DEFAULT_PORT = Number(process.env.PORT || 5000)
 const MAX_PORT_PROBES = 20
-const PER_PORT_STARTUP_TIMEOUT_MS = 5000
+const PER_PORT_STARTUP_TIMEOUT_MS = 30000
 
 let serverProcess = null
 let viteProcess = null
@@ -149,7 +149,7 @@ async function waitForBackendReady(child, port, timeoutMs) {
     await new Promise((r) => setTimeout(r, 250))
   }
   child.removeListener('exit', onExit)
-  throw new Error(`Backend did not start. Expected ${healthUrlForPort(port)} to respond.`)
+  throw new Error(`Backend did not start within ${timeoutMs / 1000}s. Expected ${healthUrlForPort(port)} to respond. If you are using a remote DB, it might be slow to connect.`)
 }
 
 const serverEntry = path.join(rootDir, 'server', 'index.js')

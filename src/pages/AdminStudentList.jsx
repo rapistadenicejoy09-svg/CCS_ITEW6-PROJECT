@@ -412,7 +412,7 @@ export default function AdminStudentList() {
                                 {student.class_section && (
                                   <>
                                     <span className="w-1 h-1 rounded-full bg-[var(--border-color)]"></span>
-                                    <span className="font-semibold text-[var(--accent)]">Sec {student.class_section}</span>
+                                    <span className="font-semibold text-[var(--accent)]"> {student.class_section}</span>
                                   </>
                                 )}
                               </div>
@@ -526,7 +526,7 @@ export default function AdminStudentList() {
                                     {student.class_section && (
                                       <>
                                         <span className="w-1 h-1 rounded-full bg-[var(--border-color)]"></span>
-                                        <span className="font-semibold text-[var(--accent)]">Section {student.class_section}</span>
+                                        <span className="font-semibold text-[var(--accent)]"> {student.class_section}</span>
                                       </>
                                     )}
                                   </div>
