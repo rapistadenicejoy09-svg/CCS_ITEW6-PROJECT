@@ -182,6 +182,15 @@ async function request(path, options = {}) {
     const err = new Error(msg)
     err.status = res.status
     err.data = data
+
+    if (res.status === 401 && !path.includes('/auth/login') && !path.includes('/auth/register')) {
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('authToken')
+        localStorage.removeItem('authUser')
+        window.location.href = '/'
+      }
+    }
+
     throw err
   }
   return data
@@ -319,3 +328,66 @@ export async function api2faVerify(token, code) {
     body: JSON.stringify({ code }),
   })
 }
+
+// --- Instructions API ---
+
+export async function apiGetInstructions(token) {
+  return request('/api/instructions', {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+}
+
+export async function apiGetInstruction(token, id) {
+  return request(`/api/instructions/${id}`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+}
+
+export async function apiCreateInstruction(token, body) {
+  return request('/api/instructions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  })
+}
+
+export async function apiUpdateInstruction(token, id, body) {
+  return request(`/api/instructions/${id}`, {
+    method: 'PUT',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  })
+}
+
+export async function apiDeleteInstruction(token, id) {
+  return request(`/api/instructions/${id}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+}
+
+export async function apiUploadInstructionFile(token, file) {
+  const resolvedBase = await getApiBase()
+  const formData = new FormData()
+  formData.append('file', file)
+
+  const res = await fetch(`${resolvedBase}/api/instructions/upload`, {
+    method: 'POST',
+    // DO NOT set Content-Type here — browser must set it to include the boundary for multipart
+    headers: { Authorization: `Bearer ${token}` },
+    body: formData,
+  })
+
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    throw new Error(data?.error || 'Upload failed')
+  }
+  return data
+}
+
+export async function apiGetInstructionFileUrl() {
+  return await getApiBase()
+}
+

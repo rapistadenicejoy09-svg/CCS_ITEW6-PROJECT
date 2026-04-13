@@ -35,7 +35,7 @@ function loadEnvFile() {
 async function debugStart() {
   const env = loadEnvFile()
   console.log('--- Environment Check ---')
-  console.log('MONGODB_URI set:', Boolean(env.MONGODB_URI))
+  console.log('DB_PROVIDER:', env.DB_PROVIDER)
   console.log('--- Starting Server ---')
   
   const serverPath = path.join(rootDir, 'server', 'index.js')

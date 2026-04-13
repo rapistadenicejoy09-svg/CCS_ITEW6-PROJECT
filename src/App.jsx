@@ -12,6 +12,10 @@ import AdminCreateAccount from './pages/AdminCreateAccount'
 import StudentLogin from './pages/StudentLogin'
 import FacultyLogin from './pages/FacultyLogin'
 import FacultyRegister from './pages/FacultyRegister'
+import InstructionsPage from './pages/InstructionsPage'
+import AdminAddMaterial from './pages/AdminAddMaterial'
+import AdminViewMaterial from './pages/AdminViewMaterial'
+import AdminEditMaterial from './pages/AdminEditMaterial'
 import { canAccessPath } from './lib/security'
 import './App.css'
 
@@ -54,7 +58,10 @@ export default function App() {
             <Route path="events" element={<ModulePage />} />
             <Route path="scheduling" element={<ModulePage />} />
             <Route path="college-research" element={<ModulePage />} />
-            <Route path="instructions" element={<ModulePage />} />
+            <Route path="instructions" element={<InstructionsPage />} />
+            <Route path="admin/instructions/add" element={<AdminAddMaterial />} />
+            <Route path="admin/instructions/:id" element={<AdminViewMaterial />} />
+            <Route path="admin/instructions/:id/edit" element={<AdminEditMaterial />} />
           </Route>
           </Route>
         </Route>

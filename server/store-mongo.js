@@ -83,6 +83,7 @@ async function createMongoStore() {
   }
 
   const client = new MongoClient(mongoUri)
+  console.log(`[MONGODB] Connecting to ${dbName}...`)
   await client.connect()
 
   const db = client.db(dbName)
@@ -90,6 +91,7 @@ async function createMongoStore() {
   const loginAttempts = db.collection('login_attempts')
   const sessions = db.collection('sessions')
   const counters = db.collection('counters')
+  const instructions = db.collection('instructions')
 
   // Ensure uniqueness constraints for user identity and sessions.
   await Promise.all([
@@ -106,6 +108,7 @@ async function createMongoStore() {
     ),
     loginAttempts.createIndex({ identifier: 1 }, { unique: true, name: 'login_attempts_identifier_unique' }),
     sessions.createIndex({ token: 1 }, { unique: true, name: 'sessions_token_unique' }),
+    instructions.createIndex({ id: 1 }, { unique: true, name: 'instructions_id_unique' }),
   ])
 
   async function nextUserId() {
@@ -124,7 +127,28 @@ async function createMongoStore() {
     return maxId + 1
   }
 
+  async function nextInstructionId() {
+    const res = await counters.findOneAndUpdate(
+      { _id: 'instructions' },
+      { $inc: { seq: 1 } },
+      { upsert: true, returnDocument: 'after' },
+    )
+    const seq = res?.value?.seq ?? res?.seq
+    if (typeof seq === 'number') return seq
+    
+    const last = await instructions.find({ id: { $gt: 0 } }, { projection: { id: 1 } }).sort({ id: -1 }).limit(1).toArray()
+    const maxId = last.length > 0 ? (Number(last[0].id) || 0) : 0
+    return maxId + 1
+  }
+
+
+
+  const gridFsBucket = new (await import('mongodb')).GridFSBucket(db, { bucketName: 'instruction_files' })
+
   return {
+    /** Expose raw db handle and GridFS bucket for file operations */
+    db,
+    gridFsBucket,
     async getLoginAttempt(identifier) {
       return await loginAttempts.findOne(
         { identifier },
@@ -451,6 +475,7 @@ async function createMongoStore() {
         }
       }
 
+
       if (setUpdates.personal_information !== undefined) {
         const names = deriveStudentRootNames(setUpdates.personal_information, setUpdates.full_name)
         setUpdates.first_name = names.first_name
@@ -470,9 +495,19 @@ async function createMongoStore() {
           : null
       }
 
+
+
       if (Object.keys(setUpdates).length > 0) {
+        // Try matching both as number and string for robustness
         const idQuery = { $or: [{ id: Number(userId) }, { id: String(userId) }] }
-        await users.updateOne(idQuery, { $set: setUpdates })
+        const result = await users.updateOne(idQuery, { $set: setUpdates })
+        
+        console.log(`[DEBUG] store: profile update for ID ${userId}:`, {
+           modifiedCount: result.modifiedCount,
+           matchedCount: result.matchedCount,
+           activeStatus: setUpdates.is_active !== undefined ? setUpdates.is_active : 'no-change'
+        })
+
       }
       return await this.getAdminUserById(userId)
     },
@@ -607,6 +642,52 @@ async function createMongoStore() {
         .toArray()
     },
 
+    async listInstructions() {
+      return await instructions.find({}, { projection: { _id: 0 } }).sort({ id: -1 }).toArray()
+    },
+
+    async getInstructionById(id) {
+      return await instructions.findOne({ id: Number(id) }, { projection: { _id: 0 } })
+    },
+
+    async createInstruction(data) {
+      const id = await nextInstructionId()
+      const doc = {
+        id,
+        type: data.type,
+        title: data.title,
+        course: data.course,
+        subject: data.subject,
+        description: data.description,
+        status: data.status,
+        author: data.author,
+        link: data.link,
+        created_at: data.created_at,
+        updated_at: data.updated_at
+      }
+      await instructions.insertOne(doc)
+      return id
+    },
+
+    async updateInstruction(id, data) {
+      const setUpdates = {
+        type: data.type,
+        title: data.title,
+        course: data.course,
+        subject: data.subject,
+        description: data.description,
+        status: data.status,
+        author: data.author,
+        link: data.link,
+        updated_at: data.updated_at
+      }
+      await instructions.updateOne({ id: Number(id) }, { $set: setUpdates })
+    },
+
+    async deleteInstruction(id) {
+      await instructions.deleteOne({ id: Number(id) })
+    },
   }
 }
+
 

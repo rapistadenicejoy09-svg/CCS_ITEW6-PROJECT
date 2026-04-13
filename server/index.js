@@ -2,6 +2,8 @@ import express from 'express'
 import cors from 'cors'
 import helmet from 'helmet'
 import rateLimit from 'express-rate-limit'
+import multer from 'multer'
+import { ObjectId } from 'mongodb'
 
 import { openStore } from './store.js'
 import {
@@ -23,6 +25,7 @@ const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res, ne
 // Provider init is async for MongoDB; keep server startup blocked until the store is ready.
 let store
 try {
+  console.log('[STARTUP] Opening datastore...')
   store = await openStore()
 } catch (err) {
   // eslint-disable-next-line no-console
@@ -71,7 +74,21 @@ if (process.env.VERCEL) {
   app.set('trust proxy', true)
 }
 app.use(vercelRestoreRequestUrl)
-app.use(helmet())
+
+
+// Configure helmet to be more permissive for frames in development, 
+// allowing the frontend to embed the PDF viewer.
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+      "frame-ancestors": ["'self'", "http://localhost:*", "http://127.0.0.1:*"],
+    },
+  },
+  crossOriginResourcePolicy: { policy: "cross-origin" },
+  frameguard: false, // Allow iframes
+}))
+
 
 const configuredCorsOrigins = String(process.env.CORS_ORIGINS || '')
   .split(',')
@@ -330,7 +347,13 @@ function publicAuthUser(user) {
 
 const authMiddleware = asyncHandler(async (req, res, next) => {
   const header = req.headers.authorization || ''
-  const token = header.startsWith('Bearer ') ? header.slice(7) : null
+  let token = header.startsWith('Bearer ') ? header.slice(7) : null
+  
+  // Allow token from query string (useful for iframes and direct downloads)
+  if (!token && req.query.token) {
+    token = req.query.token
+  }
+
   if (!token) return res.status(401).json({ error: 'Missing token' })
   const session = await store.getSessionByToken(token)
   if (!session) return res.status(401).json({ error: 'Invalid token' })
@@ -682,6 +705,185 @@ app.get('/api/admin/students', authMiddleware, authorize(PERMISSIONS.MANAGE_USER
   }
   res.json({ ok: true, students })
 }))
+
+// --- INSTRUCTIONS Endpoints ---
+
+app.get('/api/instructions', authMiddleware, asyncHandler(async (req, res) => {
+  const instructions = await store.listInstructions()
+  // Ensure id is standard JS property (string/number format from store)
+  res.json({ ok: true, instructions })
+}))
+
+app.get('/api/instructions/:id', authMiddleware, asyncHandler(async (req, res) => {
+  const instruction = await store.getInstructionById(req.params.id)
+  if (!instruction) return res.status(404).json({ error: 'Instruction not found' })
+
+  // Enhanced: If it's a GridFS link, include file metadata for smart frontend previews
+  if (instruction.link && instruction.link.startsWith('gridfs://') && store.gridFsBucket) {
+    try {
+      const fileIdString = instruction.link.replace('gridfs://', '')
+      const fileId = new ObjectId(fileIdString)
+      const files = await store.gridFsBucket.find({ _id: fileId }).toArray()
+      
+      if (files.length > 0) {
+        const file = files[0]
+        // GridFS can store type in .contentType or .metadata.contentType depending on driver/version
+        instruction.mimeType = file.contentType || (file.metadata && file.metadata.contentType)
+        instruction.fileName = file.filename || (file.metadata && file.metadata.originalName)
+        
+        console.log(`[DATABASE] File found: ${instruction.fileName} (${instruction.mimeType || 'unknown type'})`)
+      } else {
+        console.warn(`[DATABASE] WARNING: No file found in GridFS for ID: ${fileIdString}`)
+      }
+    } catch (e) {
+      console.error(`[DATABASE] ERROR during file lookup: ${e.message}`)
+    }
+  }
+
+  res.json({ ok: true, instruction })
+}))
+
+app.post('/api/instructions', authMiddleware, authorize(PERMISSIONS.INSTRUCTIONS_MANAGE), asyncHandler(async (req, res) => {
+  if (!req.body.title || !req.body.type) {
+    return res.status(400).json({ error: 'Title and Type are required' })
+  }
+  const id = await store.createInstruction({
+    type: String(req.body.type || 'lesson'),
+    title: String(req.body.title || ''),
+    course: String(req.body.course || ''),
+    subject: String(req.body.subject || ''),
+    description: String(req.body.description || ''),
+    status: String(req.body.status || 'Draft'),
+    author: String(req.body.author || req.user.full_name || 'Administrator'),
+    link: String(req.body.link || ''),
+    created_at: nowIso(),
+    updated_at: nowIso()
+  })
+  res.status(201).json({ ok: true, id })
+}))
+
+app.put('/api/instructions/:id', authMiddleware, authorize(PERMISSIONS.INSTRUCTIONS_MANAGE), asyncHandler(async (req, res) => {
+  const existing = await store.getInstructionById(req.params.id)
+  if (!existing) return res.status(404).json({ error: 'Instruction not found' })
+  
+  await store.updateInstruction(req.params.id, {
+    type: String(req.body.type || existing.type),
+    title: String(req.body.title || existing.title),
+    course: String(req.body.course || existing.course),
+    subject: String(req.body.subject || existing.subject),
+    description: String(req.body.description || existing.description),
+    status: String(req.body.status || existing.status),
+    author: String(req.body.author || existing.author),
+    link: String(req.body.link || existing.link),
+    updated_at: nowIso()
+  })
+  res.json({ ok: true })
+}))
+
+app.delete('/api/instructions/:id', authMiddleware, authorize(PERMISSIONS.INSTRUCTIONS_MANAGE), asyncHandler(async (req, res) => {
+  await store.deleteInstruction(req.params.id)
+  res.json({ ok: true })
+}))
+
+// --- FILE UPLOAD (GridFS) ---
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB limit
+  fileFilter(_req, file, cb) {
+    const allowed = ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'application/msword', 'application/vnd.ms-powerpoint', 'image/jpeg', 'image/png']
+    if (allowed.includes(file.mimetype) || file.originalname.match(/\.(pdf|docx|pptx|doc|ppt|jpg|jpeg|png)$/i)) {
+      cb(null, true)
+    } else {
+      cb(new Error('File type not allowed. Please upload PDF, DOCX, PPTX, or image files.'))
+    }
+  }
+})
+
+app.post('/api/instructions/upload', authMiddleware, authorize(PERMISSIONS.INSTRUCTIONS_MANAGE), upload.single('file'), asyncHandler(async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file provided' })
+  if (!store.gridFsBucket) return res.status(500).json({ error: 'File storage not available (MongoDB only)' })
+
+  const bucket = store.gridFsBucket
+  const filename = `${Date.now()}-${req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_')}`
+
+  await new Promise((resolve, reject) => {
+    const uploadStream = bucket.openUploadStream(filename, {
+      contentType: req.file.mimetype,
+      metadata: { originalName: req.file.originalname, uploadedBy: req.user.id }
+    })
+    uploadStream.on('finish', () => resolve(uploadStream.id))
+    uploadStream.on('error', reject)
+    uploadStream.end(req.file.buffer)
+  }).then((fileId) => {
+    res.status(201).json({
+      ok: true,
+      fileId: fileId.toString(),
+      filename: req.file.originalname,
+      size: req.file.size,
+      mimeType: req.file.mimetype
+    })
+  })
+}))
+
+app.get('/api/instructions/file/:fileId', authMiddleware, asyncHandler(async (req, res) => {
+  if (!store.gridFsBucket) return res.status(500).json({ error: 'File storage not available' })
+  
+  let objectId
+  try {
+    objectId = new ObjectId(req.params.fileId)
+  } catch {
+    return res.status(400).json({ error: 'Invalid file ID' })
+  }
+
+  const bucket = store.gridFsBucket
+  const files = await bucket.find({ _id: objectId }).toArray()
+  if (!files.length) return res.status(404).json({ error: 'File not found' })
+
+  const file = files[0]
+  const isPreview = req.query.preview === '1'
+  
+  // Robust MIME Type detection: check GridFS fields and map by extension as fallback
+  let contentType = file.contentType || (file.metadata && file.metadata.contentType)
+  
+  if (!contentType || contentType === 'application/octet-stream') {
+    const ext = file.filename.split('.').pop().toLowerCase()
+    const mimeMap = {
+      'pdf': 'application/pdf',
+      'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'doc': 'application/msword',
+      'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'ppt': 'application/vnd.ms-powerpoint',
+      'jpg': 'image/jpeg',
+      'jpeg': 'image/jpeg',
+      'png': 'image/png',
+      'gif': 'image/gif',
+      'webp': 'image/webp',
+      'svg': 'image/svg+xml'
+    }
+    if (mimeMap[ext]) contentType = mimeMap[ext]
+  }
+
+  res.setHeader('Content-Type', contentType || 'application/octet-stream')
+  res.setHeader('X-Content-Type-Options', 'nosniff')
+  res.setHeader('Cache-Control', 'private, max-age=3600')
+  
+  if (isPreview) {
+    // For previews, we omit the filename entirely to prevent the browser from auto-downloading.
+    res.setHeader('Content-Disposition', 'inline')
+  } else {
+    // For direct downloads, we include the attachment filename.
+    res.setHeader('Content-Disposition', `attachment; filename="${file.filename}"`)
+  }
+
+
+  const downloadStream = bucket.openDownloadStream(objectId)
+  downloadStream.on('error', () => res.status(404).json({ error: 'File not found' }))
+  downloadStream.pipe(res)
+}))
+
 
 app.use((err, req, res, _next) => {
   // eslint-disable-next-line no-console
