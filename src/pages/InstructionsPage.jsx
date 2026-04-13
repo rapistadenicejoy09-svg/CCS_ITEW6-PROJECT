@@ -95,6 +95,7 @@ export default function InstructionsPage() {
   const [showFilters, setShowFilters] = useState(false)
   const [filterStatus, setFilterStatus] = useState('')
   const [filterAuthor, setFilterAuthor] = useState('')
+  const [filterSubject, setFilterSubject] = useState('')
 
   const [instructions, setInstructions] = useState([])
   const [loading, setLoading] = useState(true)
@@ -139,15 +140,29 @@ export default function InstructionsPage() {
     return [...new Set(instructions.filter(item => item.type === activeTab).map(i => i.author))].sort()
   }, [activeTab, instructions])
 
+  const uniqueSubjects = useMemo(() => {
+    return [
+      ...new Set(
+        instructions
+          .filter((item) => item.type === activeTab)
+          .map((i) => String(i.subject || '').trim())
+          .filter(Boolean),
+      ),
+    ].sort()
+  }, [activeTab, instructions])
+
   const filteredItems = useMemo(() => {
     return instructions.filter((item) => {
       const matchTab = item.type === activeTab
       const matchSearch = item.title.toLowerCase().includes(search.toLowerCase()) || item.description.toLowerCase().includes(search.toLowerCase())
       const matchStatus = filterStatus ? item.status === filterStatus : true
       const matchAuthor = filterAuthor ? item.author === filterAuthor : true
-      return matchTab && matchSearch && matchStatus && matchAuthor
+      const needsSubjectFilter = activeTab === 'syllabus' || activeTab === 'lesson'
+      const itemSubject = String(item.subject || '').trim()
+      const matchSubject = needsSubjectFilter ? (filterSubject ? itemSubject === filterSubject : true) : true
+      return matchTab && matchSearch && matchStatus && matchAuthor && matchSubject
     })
-  }, [search, activeTab, filterStatus, filterAuthor, instructions])
+  }, [search, activeTab, filterStatus, filterAuthor, filterSubject, instructions])
 
   return (
     <div className="module-page">
@@ -190,6 +205,7 @@ export default function InstructionsPage() {
                       setSearch('')
                       setFilterStatus('')
                       setFilterAuthor('')
+                      setFilterSubject('')
                     }}
                     className={`flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-md transition-all whitespace-nowrap ${
                       isActive 
@@ -223,7 +239,7 @@ export default function InstructionsPage() {
               <div className="flex items-center gap-1 shrink-0">
                 <button
                   onClick={() => setShowFilters(!showFilters)}
-                  className={`btn btn-compact flex items-center justify-center gap-1.5 !px-3 !py-1.5 ${(showFilters || filterStatus || filterAuthor) ? 'btn-primary' : 'btn-secondary'}`}
+                  className={`btn btn-compact flex items-center justify-center gap-1.5 !px-3 !py-1.5 ${(showFilters || filterStatus || filterAuthor || filterSubject) ? 'btn-primary' : 'btn-secondary'}`}
                   title="Filter Materials"
                 >
                   <IconFilter />
@@ -279,12 +295,29 @@ export default function InstructionsPage() {
                 </select>
               </label>
 
-              {(filterStatus || filterAuthor) && (
+              {(activeTab === 'syllabus' || activeTab === 'lesson') && (
+                <label className="flex flex-col gap-1.5 w-full md:w-[220px]">
+                  <span className="text-[11px] uppercase tracking-wider font-semibold text-[var(--text-muted)]">Subject</span>
+                  <select
+                    className="search-input w-full !rounded-md !py-2"
+                    value={filterSubject}
+                    onChange={(e) => setFilterSubject(e.target.value)}
+                  >
+                    <option value="">All Subjects</option>
+                    {uniqueSubjects.map((subject) => (
+                      <option key={subject} value={subject}>{subject}</option>
+                    ))}
+                  </select>
+                </label>
+              )}
+
+              {(filterStatus || filterAuthor || filterSubject) && (
                 <div className="flex items-end">
                   <button
                     onClick={() => {
                       setFilterStatus('')
                       setFilterAuthor('')
+                      setFilterSubject('')
                     }}
                     className="px-5 py-2 rounded-full border border-[var(--border-color)] bg-transparent hover:bg-[var(--border-color)] text-[var(--text-muted)] hover:text-[var(--text)] text-sm font-medium transition-colors"
                   >

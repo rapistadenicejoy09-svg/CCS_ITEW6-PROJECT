@@ -119,6 +119,12 @@ export function canAccessPath(path) {
   if (path === '/admin/create-student' || path.startsWith('/admin/student/')) {
     return hasPermission(PERMISSIONS.MANAGE_USERS)
   }
+  if (path === '/admin/instructions/add' || /^\/admin\/instructions\/[^/]+\/edit$/.test(path)) {
+    return hasPermission(PERMISSIONS.INSTRUCTIONS_MANAGE)
+  }
+  if (/^\/admin\/instructions\/[^/]+$/.test(path)) {
+    return hasPermission(PERMISSIONS.INSTRUCTIONS_VIEW)
+  }
   const perm = PATH_PERMISSIONS[path]
   if (!perm) return true
   return hasPermission(perm)

@@ -273,6 +273,28 @@ function studentDisplayNameFromPi(pi, fullNameFallback) {
   return fb
 }
 
+function normalizeCourseKey(value) {
+  const raw = String(value || '').trim().toUpperCase()
+  if (!raw) return ''
+  if (raw === 'CS' || raw === 'BSCS' || raw.includes('COMPUTER SCIENCE')) return 'BSCS'
+  if (raw === 'IT' || raw === 'BSIT' || raw.includes('INFORMATION TECHNOLOGY')) return 'BSIT'
+  return raw
+}
+
+async function studentAllowedCourseKeys(userId) {
+  const out = new Set()
+  const student = await store.getAdminUserById(userId)
+  const classSection = normalizeCourseKey(student?.class_section)
+  if (classSection) out.add(classSection)
+
+  // Some datasets store student course/program inside academic_info.
+  const profile = typeof store.getAccountProfile === 'function' ? await store.getAccountProfile(userId) : null
+  const program = normalizeCourseKey(profile?.academic_info?.program || profile?.summary?.program)
+  if (program) out.add(program)
+
+  return out
+}
+
 function studentAccountProfileForResponse(p) {
   const pi = normalizedStudentNameParts(p.personal_information, p.full_name, {
     first_name: p.first_name,
@@ -709,14 +731,42 @@ app.get('/api/admin/students', authMiddleware, authorize(PERMISSIONS.MANAGE_USER
 // --- INSTRUCTIONS Endpoints ---
 
 app.get('/api/instructions', authMiddleware, asyncHandler(async (req, res) => {
-  const instructions = await store.listInstructions()
-  // Ensure id is standard JS property (string/number format from store)
+  let instructions = await store.listInstructions()
+
+  if (req.user.role === 'student') {
+    const allowedCourseKeys = await studentAllowedCourseKeys(req.user.id)
+    const allowedTypes = new Set(['curriculum', 'syllabus', 'lesson'])
+
+    // Students only see active materials of supported types for their own course.
+    instructions = instructions.filter((i) => {
+      const type = String(i?.type || '').trim().toLowerCase()
+      const status = String(i?.status || '').trim().toLowerCase()
+      const courseKey = normalizeCourseKey(i?.course)
+      if (!allowedTypes.has(type)) return false
+      if (status && status !== 'active') return false
+      if (allowedCourseKeys.size === 0) return false
+      return allowedCourseKeys.has(courseKey)
+    })
+  }
+
   res.json({ ok: true, instructions })
 }))
 
 app.get('/api/instructions/:id', authMiddleware, asyncHandler(async (req, res) => {
   const instruction = await store.getInstructionById(req.params.id)
   if (!instruction) return res.status(404).json({ error: 'Instruction not found' })
+
+  if (req.user.role === 'student') {
+    const allowedCourseKeys = await studentAllowedCourseKeys(req.user.id)
+    const type = String(instruction?.type || '').trim().toLowerCase()
+    const status = String(instruction?.status || '').trim().toLowerCase()
+    const courseKey = normalizeCourseKey(instruction?.course)
+    const allowedTypes = new Set(['curriculum', 'syllabus', 'lesson'])
+
+    if (allowedCourseKeys.size === 0 || !allowedTypes.has(type) || (status && status !== 'active') || !allowedCourseKeys.has(courseKey)) {
+      return res.status(403).json({ error: 'Access denied' })
+    }
+  }
 
   // Enhanced: If it's a GridFS link, include file metadata for smart frontend previews
   if (instruction.link && instruction.link.startsWith('gridfs://') && store.gridFsBucket) {

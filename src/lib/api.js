@@ -391,3 +391,75 @@ export async function apiGetInstructionFileUrl() {
   return await getApiBase()
 }
 
+export async function apiFetchInstructionFileBlob(token, fileId, { preview = false } = {}) {
+  const encodedId = encodeURIComponent(String(fileId || '').trim())
+  if (!encodedId) throw new Error('Invalid file id')
+  const query = preview ? '?preview=1' : ''
+  const path = `/api/instructions/file/${encodedId}${query}`
+  const withTokenPath = token
+    ? `${path}${query ? '&' : '?'}token=${encodeURIComponent(token)}`
+    : path
+
+  const doFetch = async (base) =>
+    await fetch(`${base}${path}`, {
+      method: 'GET',
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    })
+  const doFetchWithQueryToken = async (base) =>
+    await fetch(`${base}${withTokenPath}`, {
+      method: 'GET',
+    })
+
+  let res
+  try {
+    let base = await getApiBase()
+    try {
+      res = await doFetch(base)
+    } catch {
+      clearCachedApiBase()
+      base = await getApiBase()
+      res = await doFetch(base)
+    }
+    if ((res.status === 401 || res.status === 403) && token) {
+      // Fallback for environments where auth headers are stripped on streamed responses.
+      res = await doFetchWithQueryToken(base)
+    }
+
+    // In local dev, multiple backend instances may be running on different ports.
+    // If the currently resolved base still fails, probe other localhost API candidates.
+    if ((!res || !res.ok) && !forbidLocalhostFallback()) {
+      for (const candidate of DEFAULT_API_CANDIDATES) {
+        try {
+          let candidateRes = await doFetch(candidate)
+          if ((candidateRes.status === 401 || candidateRes.status === 403) && token) {
+            candidateRes = await doFetchWithQueryToken(candidate)
+          }
+          if (candidateRes.ok) {
+            try {
+              if (typeof sessionStorage !== 'undefined') sessionStorage.setItem('ccs_api_base', candidate)
+            } catch {
+              // ignore cache write errors
+            }
+            res = candidateRes
+            break
+          }
+        } catch {
+          // try next candidate
+        }
+      }
+    }
+  } catch (e) {
+    const shown = labelApiBaseForError(await getApiBase().catch(() => fallbackBaseForErrorMessage()))
+    throw new Error(`Unable to reach API server at ${shown}. Is the backend running?`, { cause: e })
+  }
+
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(data?.error || `Request failed (${res.status})`)
+  }
+
+  const blob = await res.blob()
+  const contentType = res.headers.get('Content-Type') || ''
+  return { blob, contentType }
+}
+

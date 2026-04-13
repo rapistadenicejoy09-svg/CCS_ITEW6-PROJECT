@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { apiGetInstruction, apiGetInstructionFileUrl } from '../lib/api'
+import { apiFetchInstructionFileBlob, apiGetInstruction, apiGetInstructionFileUrl } from '../lib/api'
 
 function IconDownload() {
   return (
@@ -75,6 +75,7 @@ const ensureAbsoluteUrl = (url) => {
 function DocumentViewerShell({ 
   fileName, 
   url, 
+  downloadUrl,
   numPages, 
   currentPage, 
   scale, 
@@ -173,7 +174,7 @@ function DocumentViewerShell({
                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg>
             </button>
             <a 
-              href={url} 
+              href={downloadUrl || url} 
               target="_blank" 
               rel="noopener noreferrer" 
               className="w-9 h-9 flex items-center justify-center text-[#f1f3f4] hover:bg-white/10 rounded-full transition-colors" 
@@ -203,7 +204,7 @@ function DocumentViewerShell({
   )
 }
 
-function PdfPreview({ url, fileName }) {
+function PdfPreview({ url, fileName, downloadUrl }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [numPages, setNumPages] = useState(0)
@@ -290,6 +291,7 @@ function PdfPreview({ url, fileName }) {
     <DocumentViewerShell
       fileName={fileName}
       url={url}
+      downloadUrl={downloadUrl}
       numPages={numPages}
       currentPage={currentPage}
       scale={scale}
@@ -316,7 +318,7 @@ function PdfPreview({ url, fileName }) {
   )
 }
 
-function FilePreview({ url, fileName }) {
+function FilePreview({ url, fileName, authToken, fileId, sourceDownloadUrl }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [contentType, setContentType] = useState('')
@@ -327,14 +329,27 @@ function FilePreview({ url, fileName }) {
     const load = async () => {
       try {
         setLoading(true)
-        const res = await fetch(url)
-        if (!res.ok) throw new Error('Failed to fetch resource')
-        const type = res.headers.get('Content-Type') || ''
-        const blob = await res.blob()
+        let blob
+        let type = ''
+        if (fileId) {
+          const out = await apiFetchInstructionFileBlob(authToken, fileId, { preview: true })
+          blob = out.blob
+          type = out.contentType
+        } else {
+          const headers = authToken ? { Authorization: `Bearer ${authToken}` } : undefined
+          const res = await fetch(url, headers ? { headers } : undefined)
+          if (!res.ok) {
+            const payload = await res.json().catch(() => null)
+            const reason = payload?.error || `HTTP ${res.status}`
+            throw new Error(reason)
+          }
+          type = res.headers.get('Content-Type') || ''
+          blob = await res.blob()
+        }
         const bUrl = URL.createObjectURL(blob)
         if (active) { setContentType(type); setBlobUrl(bUrl); setLoading(false); }
       } catch (err) {
-        if (active) { setError('Unable to load preview.'); setLoading(false); }
+        if (active) { setError(`Unable to load preview (${err?.message || 'request failed'}).`); setLoading(false); }
       }
     }
     load()
@@ -369,7 +384,7 @@ function FilePreview({ url, fileName }) {
   }
 
   if (isPdf) {
-    return <PdfPreview url={blobUrl} fileName={fileName} />
+    return <PdfPreview url={blobUrl} fileName={fileName} downloadUrl={sourceDownloadUrl || blobUrl} />
   }
 
   return (
@@ -548,6 +563,15 @@ export default function AdminViewMaterial() {
   }
 
   const isCurriculum = material.type === 'curriculum'
+  const authToken = localStorage.getItem('authToken') || ''
+  const role = (() => {
+    try {
+      return JSON.parse(localStorage.getItem('authUser') || '{}')?.role || null
+    } catch {
+      return null
+    }
+  })()
+  const canEdit = role === 'admin' || role === 'faculty'
 
   // Refined universal link opener
   const handleOpenResource = (e, targetUrl) => {
@@ -585,9 +609,11 @@ export default function AdminViewMaterial() {
             <Link to="/instructions" className="btn btn-secondary">
               ← Back
             </Link>
-            <Link to={`/admin/instructions/${id}/edit`} className="btn btn-primary flex items-center justify-center gap-2">
-              <IconEdit /> Edit
-            </Link>
+            {canEdit ? (
+              <Link to={`/admin/instructions/${id}/edit`} className="btn btn-primary flex items-center justify-center gap-2">
+                <IconEdit /> Edit
+              </Link>
+            ) : null}
           </div>
         </header>
 
@@ -640,8 +666,9 @@ export default function AdminViewMaterial() {
                   // INTERNAL FILES (GridFS)
                   if (link.startsWith('gridfs://')) {
                     const fileId = link.replace('gridfs://', '')
-                    const token = localStorage.getItem('authToken')
-                    const fileUrl = `${apiBase}/api/instructions/file/${fileId}${token ? `?token=${token}` : ''}${token ? '&' : '?'}preview=1`
+                    const fileUrl = `${apiBase}/api/instructions/file/${fileId}?preview=1`
+                    const safeToken = authToken ? encodeURIComponent(authToken) : ''
+                    const fileDownloadUrl = `${apiBase}/api/instructions/file/${fileId}${safeToken ? `?token=${safeToken}` : ''}`
                     
                     const normalizedMime = (material.mimeType || '').toLowerCase()
                     const fileName = (material.fileName || '').toLowerCase()
@@ -651,7 +678,15 @@ export default function AdminViewMaterial() {
                                      fileName.endsWith('.pdf') || /\.(jpg|jpeg|png|gif|webp|svg)$/i.test(fileName)
                     
                     if (isPreviewable) {
-                      return <FilePreview url={fileUrl} fileName={material.fileName} />
+                      return (
+                        <FilePreview
+                          url={fileUrl}
+                          fileName={material.fileName}
+                          authToken={authToken}
+                          fileId={fileId}
+                          sourceDownloadUrl={fileDownloadUrl}
+                        />
+                      )
                     }
 
                     // Fallback Card for DOCX, PPT, and others from GridFS
@@ -672,7 +707,7 @@ export default function AdminViewMaterial() {
                           </p>
                         </div>
                         <button
-                          onClick={(e) => handleOpenResource(e, fileUrl)}
+                          onClick={(e) => handleOpenResource(e, fileDownloadUrl)}
                           className="flex items-center gap-3 px-8 py-3.5 rounded-2xl bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white font-black text-xs uppercase tracking-widest transition-all shadow-xl shadow-[var(--accent)]/30 active:scale-95 cursor-pointer"
                         >
                           <IconDownload /> Download File
@@ -737,7 +772,8 @@ export default function AdminViewMaterial() {
                     if (link.startsWith('gridfs://')) {
                       const fileId = link.replace('gridfs://', '')
                       const token = localStorage.getItem('authToken')
-                      const fileUrl = `${apiBase}/api/instructions/file/${fileId}${token ? `?token=${token}` : ''}`
+                      const safeToken = token ? encodeURIComponent(token) : ''
+                      const fileUrl = `${apiBase}/api/instructions/file/${fileId}${safeToken ? `?token=${safeToken}` : ''}`
                       return (
                         <a
                           href={fileUrl}
