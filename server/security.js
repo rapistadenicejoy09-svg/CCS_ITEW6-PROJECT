@@ -24,7 +24,7 @@ export const PERMISSIONS = {
   INSTRUCTIONS_MANAGE: 'instructions:manage',
   CREATE_ADMIN_ACCOUNT: 'admin:create_account',
   MANAGE_USERS: 'users:manage',
-  
+
   // Document Management System (NEW)
   DOC_CREATE: 'doc:create',
   DOC_READ_OWN: 'doc:read_own',
