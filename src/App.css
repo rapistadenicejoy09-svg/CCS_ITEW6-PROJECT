@@ -264,6 +264,7 @@ body[data-theme='light'] .ay-text {
   padding: 16px 12px;
   gap: 8px;
   flex: 1;
+  overflow-y: auto;
 }
 
 .nav-item {

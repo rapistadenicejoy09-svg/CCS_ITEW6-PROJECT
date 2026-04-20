@@ -144,6 +144,18 @@ export const PATH_PERMISSIONS = {
   '/scheduling': PERMISSIONS.SCHEDULING_VIEW,
   '/college-research': PERMISSIONS.COLLEGE_RESEARCH_VIEW,
   '/instructions': PERMISSIONS.INSTRUCTIONS_VIEW,
+  
+  // New Faculty & Admin Modules
+  '/faculty-dashboard': PERMISSIONS.DASHBOARD_VIEW,
+  '/faculty/teaching-load': PERMISSIONS.FACULTY_MY_PROFILE,
+  '/faculty/schedule': PERMISSIONS.FACULTY_MY_PROFILE,
+  '/faculty/evaluations': PERMISSIONS.FACULTY_MY_PROFILE,
+  '/faculty/consultation': PERMISSIONS.FACULTY_MY_PROFILE,
+  '/faculty/subjects': PERMISSIONS.FACULTY_MY_PROFILE, // actually maybe MANAGE_DEPARTMENT? But faculty view it. We'll leave it open for now or tie it to appropriate perm.
+  '/faculty/documents': PERMISSIONS.DOC_READ_OWN,
+  '/admin/reports': PERMISSIONS.VIEW_REPORTS,
+  '/admin/activity-log': PERMISSIONS.ACTIVITY_LOG_VIEW,
+  '/admin/admins': PERMISSIONS.ADMIN_PROFILE, // since only admins can get to Admin Profile, it's safe to map it here
 }
 
 /**

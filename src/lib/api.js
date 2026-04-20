@@ -615,3 +615,28 @@ export async function apiDeleteEvent(token, id) {
   })
 }
 
+// --- MISSING ENDPOINTS (MOCKED FOR DEPENDENCY RESOLUTION) ---
+export async function apiAdminLogs(token) { return request('/api/admin/logs', { headers: { Authorization: `Bearer ${token}` } }) }
+export async function apiMeLogs(token) { return request('/api/logs', { headers: { Authorization: `Bearer ${token}` } }) }
+
+export async function apiGetTeachingLoads(token) { return request('/api/faculty/teaching-loads', { headers: { Authorization: `Bearer ${token}` } }) }
+export async function apiCreateTeachingLoad(token, body) { return request('/api/faculty/teaching-loads', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) }
+export async function apiDeleteTeachingLoad(token, id) { return request(`/api/faculty/teaching-loads/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }) }
+
+export async function apiGetSubjects(token) { return request('/api/faculty/subjects', { headers: { Authorization: `Bearer ${token}` } }) }
+export async function apiCreateSubject(token, body) { return request('/api/faculty/subjects', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) }
+export async function apiDeleteSubject(token, id) { return request(`/api/faculty/subjects/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }) }
+
+export async function apiGetEvaluations(token) { return request('/api/faculty/evaluations', { headers: { Authorization: `Bearer ${token}` } }) }
+
+export async function apiGetDocuments(token) { return request('/api/faculty/documents', { headers: { Authorization: `Bearer ${token}` } }) }
+export async function apiUploadDocument(token, body) { return request('/api/faculty/documents/upload', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body }) }
+export async function apiDeleteDocument(token, id) { return request(`/api/faculty/documents/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }) }
+
+export async function apiGetSchedules(token) { return request('/api/faculty/schedules', { headers: { Authorization: `Bearer ${token}` } }) }
+export async function apiCreateSchedule(token, body) { return request('/api/faculty/schedules', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) }
+export async function apiDeleteSchedule(token, id) { return request(`/api/faculty/schedules/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }) }
+
+export async function apiCreateAdminAccount(token, body) { return request('/api/admin/users', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) }
+
+
